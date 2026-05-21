@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronRight, Clock, Info, PhoneCall, Reply, ShieldAlert, X } from 'lucide-react';
+import { Check, ChevronRight, Clock, Copy, ExternalLink, Info, Mail, PhoneCall, Reply, Search, ShieldAlert, X } from 'lucide-react';
 import { BRADLEY_ACTIONS } from '@/lib/constants';
 import { formatDate, sortEscalations, truncate } from '@/lib/utils';
 import { Button } from '@/components/ui/Button';
@@ -14,6 +14,7 @@ import type { Escalation, OwnerNextAction } from '@/types';
 
 const actionIcons: Record<string, JSX.Element> = {
   'Call Needed': <PhoneCall className="h-4 w-4" />,
+  'Direct Reply': <ExternalLink className="h-4 w-4" />,
   'Reply Needed': <Reply className="h-4 w-4" />,
   'Okay Carl, Work This': <Check className="h-4 w-4" />,
   'Needs More Info': <Info className="h-4 w-4" />,
@@ -22,6 +23,8 @@ const actionIcons: Record<string, JSX.Element> = {
 };
 
 type HandoffMode = 'reply' | 'moreInfo';
+
+const BRADLEY_QUO_HOME_URL = 'https://my.quo.com/inbox';
 
 function findDirectLink(value?: string | null) {
   const trimmed = (value ?? '').trim();
@@ -73,6 +76,33 @@ function getPhoneNumber(item: Escalation) {
   return match?.[0]?.trim() ?? '';
 }
 
+function getCustomerEmail(item: Escalation) {
+  if (item.email?.trim()) return item.email.trim();
+
+  const searchableText = [item.source_detail, item.where_to_continue, item.situation, item.last_touch]
+    .filter(Boolean)
+    .join(' ');
+
+  const match = searchableText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  return match?.[0]?.trim() ?? '';
+}
+
+function openEmailCompose(item: Escalation) {
+  const customerEmail = getCustomerEmail(item);
+  if (!customerEmail) return false;
+
+  const subject = encodeURIComponent(`Green Acres Landscaping - ${item.topic}`);
+  window.location.href = `mailto:${encodeURIComponent(customerEmail)}?subject=${subject}`;
+  return true;
+}
+
+async function openBradleyQuoSearch(item: Escalation) {
+  const phoneNumber = getPhoneNumber(item);
+  if (phoneNumber) await copyToClipboard(phoneNumber);
+  window.open(BRADLEY_QUO_HOME_URL, '_blank', 'noopener,noreferrer');
+  return Boolean(phoneNumber);
+}
+
 async function copyToClipboard(text: string) {
   if (!text.trim()) return false;
 
@@ -119,6 +149,7 @@ export function BradleyReviewPage() {
   const [handoffNote, setHandoffNote] = useState('');
   const [savingHandoff, setSavingHandoff] = useState(false);
   const [selectedReviewItem, setSelectedReviewItem] = useState<Escalation | null>(null);
+  const [directReplyItem, setDirectReplyItem] = useState<Escalation | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -146,21 +177,22 @@ export function BradleyReviewPage() {
       return;
     }
 
-    const threadOpened = openReplyThread(item);
     setHandoffNote(
       item.bradley_note ||
         'Carl, please review the thread and gather the missing details before Bradley makes a decision.'
     );
-    setSuccess(
-      threadOpened
-        ? 'Thread opened. Add what information is needed, then hand it to Carl.'
-        : 'Add what information is needed, then hand it to Carl. No direct thread URL is saved yet.'
-    );
+    setSuccess('Add what information is needed, then hand it to Carl. This will not open Carl’s private thread link for Bradley.');
   };
 
   const action = async (item: Escalation, label: string, status: string, ownerNextAction: OwnerNextAction, note: string) => {
     setError('');
     setSuccess('');
+
+    if (label === 'Direct Reply') {
+      setDirectReplyItem(item);
+      setSuccess('Direct reply helper opened. Bradley can use his own email or Quo account, then mark I Replied after sending.');
+      return;
+    }
 
     if (label === 'Reply Needed') {
       startHandoff(item, 'reply');
@@ -180,7 +212,7 @@ export function BradleyReviewPage() {
       if (!confirmed) return;
     }
 
-    const threadOpened = label === 'Call Needed' ? openCallLink(item) : label === 'I Replied' ? openReplyThread(item) : false;
+    const threadOpened = label === 'Call Needed' ? openCallLink(item) : false;
     const phoneNumber = label === 'Call Needed' ? getPhoneNumber(item) : '';
     const phoneCopied = phoneNumber ? await copyToClipboard(phoneNumber) : false;
 
@@ -207,7 +239,7 @@ export function BradleyReviewPage() {
           : ' Add a Call Link / OpenPhone Link if you want Call Needed to open the call thread automatically.';
         setSuccess(`${phoneMessage}${threadMessage}`);
       } else if (label === 'I Replied') {
-        setSuccess(threadOpened ? 'Saved as Bradley Replied. Reply thread opened.' : 'Saved as Bradley Replied. Add a Reply / Email Thread Link if you want it to open automatically.');
+        setSuccess('Saved as Bradley Replied.');
       } else if (label === 'Okay Carl, Work This') {
         setSuccess('Moved to Carl Work Queue.');
       }
@@ -293,6 +325,19 @@ export function BradleyReviewPage() {
             if (label === 'Resolved' || label === 'Okay Carl, Work This' || label === 'I Replied') {
               setSelectedReviewItem(null);
             }
+          }}
+        />
+      ) : null}
+
+
+      {directReplyItem ? (
+        <DirectReplyModal
+          item={directReplyItem}
+          onClose={() => setDirectReplyItem(null)}
+          onMarkReplied={async () => {
+            await action(directReplyItem, 'I Replied', 'Bradley Replied', 'Customer', 'Bradley replied directly from his own email or Quo account.');
+            setDirectReplyItem(null);
+            setSelectedReviewItem(null);
           }}
         />
       ) : null}
@@ -450,7 +495,7 @@ function ReviewDetailModal({
               <p className="mt-1">
                 {hasPhoneNumber ? 'Call Needed will copy the phone number.' : 'No phone number saved yet.'}{' '}
                 {hasCallLink ? 'Call Needed can open the saved call link.' : 'No call link saved yet.'}{' '}
-                {hasReplyThreadLink ? 'I Replied and Needs More Info can open the saved reply/email thread link.' : 'No reply/email thread link saved yet.'}
+                {hasReplyThreadLink ? 'Carl-side reply thread link is saved. Direct Reply uses Bradley’s own email or Quo account instead.' : 'No Carl-side reply/email thread link saved yet.'}
               </p>
             </div>
           </div>
@@ -468,6 +513,140 @@ function ReviewDetailModal({
                 {action.label}
               </Button>
             ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function DirectReplyModal({
+  item,
+  onClose,
+  onMarkReplied
+}: {
+  item: Escalation;
+  onClose: () => void;
+  onMarkReplied: () => void;
+}) {
+  const [localMessage, setLocalMessage] = useState('');
+  const customerEmail = getCustomerEmail(item);
+  const phoneNumber = getPhoneNumber(item);
+  const suggestedNote = item.bradley_note || '';
+  const canUseEmail = Boolean(customerEmail);
+  const canUseQuo = Boolean(phoneNumber);
+
+  const setMessage = (message: string) => {
+    setLocalMessage(message);
+    window.setTimeout(() => setLocalMessage(''), 2500);
+  };
+
+  const copyValue = async (value: string, label: string) => {
+    const copied = await copyToClipboard(value);
+    setMessage(copied ? `${label} copied.` : `Unable to copy ${label.toLowerCase()}.`);
+  };
+
+  const handleEmailCompose = () => {
+    const opened = openEmailCompose(item);
+    setMessage(opened ? 'Email compose opened in Bradley’s default email account.' : 'No customer email is saved yet.');
+  };
+
+  const handleQuoOpen = async () => {
+    const copiedPhone = await openBradleyQuoSearch(item);
+    setMessage(copiedPhone ? 'Phone copied. Quo opened. Bradley can paste/search the phone number in his own Quo account.' : 'Quo opened, but no phone number is saved yet.');
+  };
+
+  const handleMarkReplied = async () => {
+    const confirmed = window.confirm(`Are you sure Bradley already replied to ${item.customer_name} from his own email or Quo account?`);
+    if (!confirmed) return;
+    await onMarkReplied();
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/50 p-4" onClick={onClose}>
+      <div
+        className="max-h-[92vh] w-full max-w-2xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-slate-100 p-5">
+          <div>
+            <p className="section-title">Direct reply using Bradley’s own account</p>
+            <h2 className="mt-2 text-2xl font-bold text-slate-950">{item.customer_name}</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              This does not use Carl’s private Gmail or Quo thread link. It helps Bradley reply from his own email or Quo account.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-slate-200 bg-white p-2 text-slate-500 transition hover:bg-slate-50 hover:text-slate-900"
+            aria-label="Close direct reply helper"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="max-h-[calc(92vh-124px)] overflow-y-auto p-5">
+          {localMessage ? (
+            <div className="mb-4 rounded-2xl border border-ga-200 bg-ga-50 p-3 text-sm text-ga-800">{localMessage}</div>
+          ) : null}
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-950">
+                <Mail className="h-4 w-4" />
+                Email direct reply
+              </div>
+              <p className="mt-2 break-words text-sm text-slate-700">{customerEmail || 'No customer email saved yet.'}</p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" leftIcon={<Copy className="h-4 w-4" />} disabled={!canUseEmail} onClick={() => copyValue(customerEmail, 'Customer email')}>
+                  Copy Email
+                </Button>
+                <Button size="sm" leftIcon={<ExternalLink className="h-4 w-4" />} disabled={!canUseEmail} onClick={handleEmailCompose}>
+                  Open Email Compose
+                </Button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-950">
+                <Search className="h-4 w-4" />
+                Quo direct reply
+              </div>
+              <p className="mt-2 break-words text-sm text-slate-700">{phoneNumber || 'No customer phone saved yet.'}</p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" leftIcon={<Copy className="h-4 w-4" />} disabled={!canUseQuo} onClick={() => copyValue(phoneNumber, 'Phone number')}>
+                  Copy Phone
+                </Button>
+                <Button size="sm" leftIcon={<ExternalLink className="h-4 w-4" />} onClick={handleQuoOpen}>
+                  Open Quo
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Context / suggested note</p>
+            <p className="mt-2 whitespace-pre-wrap break-words text-sm text-slate-800">
+              {suggestedNote || item.proposed_next_step || 'No Bradley note saved yet.'}
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button size="sm" variant="secondary" leftIcon={<Copy className="h-4 w-4" />} onClick={() => copyValue(suggestedNote || item.proposed_next_step, 'Note')}>
+                Copy Note
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            If Bradley does not see the customer in his Quo account after searching the phone number, then that customer thread is only available in Carl/team access. In that case, Bradley should use Reply Needed and hand the reply back to Carl.
+          </div>
+
+          <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+            <Button variant="secondary" onClick={onClose}>Close</Button>
+            <Button onClick={handleMarkReplied} leftIcon={<Check className="h-4 w-4" />}>
+              I Replied
+            </Button>
           </div>
         </div>
       </div>

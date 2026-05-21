@@ -64,7 +64,13 @@ export const BRADLEY_ACTIONS = [
     label: 'Call Needed',
     status: 'Waiting on Bradley',
     ownerNextAction: 'Bradley',
-    note: 'Bradley marked call needed. Open Quo/OpenPhone and call the customer.'
+    note: 'Bradley marked call needed. Copy the customer phone number and use Bradley’s own phone or Quo account.'
+  },
+  {
+    label: 'Direct Reply',
+    status: 'Waiting on Bradley',
+    ownerNextAction: 'Bradley',
+    note: 'Bradley opened the direct reply helper using his own email or Quo account.'
   },
   {
     label: 'Reply Needed',
