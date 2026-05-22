@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronRight, Copy, ExternalLink, Image as ImageIcon, Info, Mail, Reply, Search, ShieldAlert, X } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Copy, ExternalLink, Image as ImageIcon, Info, Mail, Reply, Search, ShieldAlert, X } from 'lucide-react';
 import { BRADLEY_ACTIONS } from '@/lib/constants';
 import { formatDate, sortEscalations, truncate } from '@/lib/utils';
 import { Button } from '@/components/ui/Button';
@@ -533,6 +533,32 @@ function PhotoReviewModal({
   onReplyNeeded: () => void;
 }) {
   const attachments = getNeedsMoreInfoScreenshots(item);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const active = attachments[activeIndex];
+  const hasMultiple = attachments.length > 1;
+
+  const goPrevious = () => {
+    setActiveIndex((current) => (current === 0 ? attachments.length - 1 : current - 1));
+  };
+
+  const goNext = () => {
+    setActiveIndex((current) => (current === attachments.length - 1 ? 0 : current + 1));
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!attachments.length) return;
+      if (event.key === 'ArrowLeft' && hasMultiple) goPrevious();
+      if (event.key === 'ArrowRight' && hasMultiple) goNext();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [attachments.length, hasMultiple]);
+
+  useEffect(() => {
+    if (activeIndex > attachments.length - 1) setActiveIndex(0);
+  }, [activeIndex, attachments.length]);
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-4" onClick={onClose}>
@@ -545,41 +571,81 @@ function PhotoReviewModal({
             <p className="section-title">Needs More Info screenshots</p>
             <h2 className="mt-2 text-2xl font-bold text-slate-950">{item.customer_name}</h2>
             <p className="mt-1 text-sm text-slate-500">
-              Bradley can review the attached customer conversation screenshots or full-detail screenshots here before deciding what Carl should gather or reply.
+              Review the attached conversation screenshots here. Use the arrows or thumbnails when there are multiple screenshots.
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
             className="rounded-full border border-slate-200 bg-white p-2 text-slate-500 transition hover:bg-slate-50 hover:text-slate-900"
-            aria-label="Close reference photos"
+            aria-label="Close screenshots"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
 
         <div className="max-h-[calc(94vh-132px)] overflow-y-auto p-5">
-          {attachments.length ? (
-            <div className="grid gap-4 md:grid-cols-2">
-              {attachments.map((attachment, index) => (
-                <a
-                  key={attachment.id}
-                  href={attachment.file_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="group rounded-2xl border border-slate-200 bg-slate-50 p-3 transition hover:border-ga-300 hover:bg-white"
-                >
-                  <div className="mb-2 flex items-center justify-between gap-3">
-                    <p className="truncate text-sm font-semibold text-slate-900">Photo {index + 1}</p>
-                    <span className="text-xs font-medium text-slate-500">Open full size</span>
-                  </div>
-                  <img
-                    src={attachment.file_url}
-                    alt={attachment.file_name}
-                    className="max-h-[520px] w-full rounded-xl border border-slate-200 object-contain bg-white"
-                  />
+          {active ? (
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4">
+                <div>
+                  <p className="text-sm font-semibold text-slate-950">Screenshot {activeIndex + 1} of {attachments.length}</p>
+                  <p className="mt-1 max-w-xl truncate text-xs text-slate-500">{active.file_name}</p>
+                </div>
+                <a href={active.file_url} target="_blank" rel="noreferrer">
+                  <Button type="button" variant="secondary" size="sm" leftIcon={<ExternalLink className="h-4 w-4" />}>
+                    Open full size
+                  </Button>
                 </a>
-              ))}
+              </div>
+
+              <div className="relative flex min-h-[360px] items-center justify-center bg-slate-950 p-3 sm:p-5">
+                {hasMultiple ? (
+                  <button
+                    type="button"
+                    onClick={goPrevious}
+                    className="absolute left-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/90 p-3 text-slate-900 shadow-lg transition hover:bg-white"
+                    aria-label="Previous screenshot"
+                  >
+                    <ChevronLeft className="h-5 w-5" />
+                  </button>
+                ) : null}
+
+                <img
+                  src={active.file_url}
+                  alt={active.file_name}
+                  className="max-h-[62vh] w-auto max-w-full rounded-xl object-contain"
+                />
+
+                {hasMultiple ? (
+                  <button
+                    type="button"
+                    onClick={goNext}
+                    className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/90 p-3 text-slate-900 shadow-lg transition hover:bg-white"
+                    aria-label="Next screenshot"
+                  >
+                    <ChevronRight className="h-5 w-5" />
+                  </button>
+                ) : null}
+              </div>
+
+              {hasMultiple ? (
+                <div className="flex gap-2 overflow-x-auto border-t border-slate-100 p-3">
+                  {attachments.map((attachment, index) => (
+                    <button
+                      key={attachment.id}
+                      type="button"
+                      onClick={() => setActiveIndex(index)}
+                      className={`h-16 w-20 shrink-0 overflow-hidden rounded-lg border-2 transition ${
+                        index === activeIndex ? 'border-ga-600' : 'border-transparent opacity-70 hover:opacity-100'
+                      }`}
+                      aria-label={`View screenshot ${index + 1}`}
+                    >
+                      <img src={attachment.file_url} alt={attachment.file_name} className="h-full w-full object-cover" />
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ) : (
             <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
@@ -590,13 +656,6 @@ function PhotoReviewModal({
               </p>
             </div>
           )}
-
-          <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-            <p className="font-semibold text-slate-950">Context</p>
-            <p className="mt-2 whitespace-pre-wrap break-words">{item.situation}</p>
-            <p className="mt-3 font-semibold text-slate-950">Decision needed</p>
-            <p className="mt-2 whitespace-pre-wrap break-words">{item.proposed_next_step}</p>
-          </div>
 
           <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
             <Button variant="secondary" onClick={onClose}>Close</Button>
