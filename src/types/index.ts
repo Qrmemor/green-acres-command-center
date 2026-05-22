@@ -116,3 +116,22 @@ export interface DashboardStats {
   waitingOnCustomer: number;
   resolvedToday: number;
 }
+
+export type AIMemoryType = 'sop_rule' | 'bradley_pattern' | 'customer_reply' | 'pricing_scope' | 'service_area' | 'workflow' | 'lesson';
+export type AIMemoryConfidence = 'high' | 'medium' | 'low';
+
+export interface AIMemory {
+  id: string;
+  memory_type: AIMemoryType;
+  title: string;
+  summary: string;
+  tags: string[];
+  source_escalation_id: string | null;
+  confidence: AIMemoryConfidence;
+  is_active: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type AIMemoryPayload = Omit<AIMemory, 'id' | 'created_at' | 'updated_at'>;

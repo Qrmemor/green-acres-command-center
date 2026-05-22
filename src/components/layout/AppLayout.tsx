@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
+  Brain,
+  Database,
   CheckCircle2,
   FileText,
   Home,
@@ -26,6 +28,8 @@ type NavItem = {
 const nav: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: Home, roles: ['carl', 'bradley', 'admin'] },
   { to: '/add', label: 'Add Escalation', icon: PlusCircle, roles: ['carl', 'admin'] },
+  { to: '/ai-triage', label: 'AI Triage', icon: Brain, roles: ['carl', 'admin'] },
+  { to: '/ai-memory', label: 'AI Memory', icon: Database, roles: ['carl', 'admin'] },
   { to: '/bradley-review', label: 'Bradley Review', icon: ShieldCheck, roles: ['carl', 'bradley', 'admin'] },
   { to: '/carl-review', label: 'Carl Review', icon: UserCheck, roles: ['carl', 'admin'] },
   { to: '/reports', label: 'SOD / EOD', icon: FileText, roles: ['carl', 'admin'] },

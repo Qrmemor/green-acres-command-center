@@ -5,6 +5,8 @@ import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 import { LoadingState } from '@/components/common/LoadingState';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { AddEscalationPage } from '@/pages/AddEscalationPage';
+import { AITriagePage } from '@/pages/AITriagePage';
+import { AIMemoryPage } from '@/pages/AIMemoryPage';
 import { BradleyReviewPage } from '@/pages/BradleyReviewPage';
 import { CarlReviewPage } from '@/pages/CarlReviewPage';
 import { DashboardPage } from '@/pages/DashboardPage';
@@ -55,6 +57,8 @@ export default function App() {
           <Route path="/login" element={<LoginPage />} />
           <Route path="/" element={<ProtectedLayout><DashboardPage /></ProtectedLayout>} />
           <Route path="/add" element={<ProtectedLayout allowedRoles={CARL_ADMIN_ONLY}><AddEscalationPage /></ProtectedLayout>} />
+          <Route path="/ai-triage" element={<ProtectedLayout allowedRoles={CARL_ADMIN_ONLY}><AITriagePage /></ProtectedLayout>} />
+          <Route path="/ai-memory" element={<ProtectedLayout allowedRoles={CARL_ADMIN_ONLY}><AIMemoryPage /></ProtectedLayout>} />
           <Route path="/escalations/:id" element={<ProtectedLayout allowedRoles={CARL_ADMIN_ONLY}><EscalationDetailPage /></ProtectedLayout>} />
           <Route path="/bradley-review" element={<ProtectedLayout allowedRoles={BRADLEY_ALLOWED}><BradleyReviewPage /></ProtectedLayout>} />
           <Route path="/carl-review" element={<ProtectedLayout allowedRoles={CARL_ADMIN_ONLY}><CarlReviewPage /></ProtectedLayout>} />

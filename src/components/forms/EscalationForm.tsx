@@ -1,6 +1,6 @@
 import { type ClipboardEvent, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertCircle, ClipboardPaste, ImagePlus, Save, Wand2, X } from 'lucide-react';
+import { AlertCircle, Brain, CheckCircle2, ClipboardPaste, ImagePlus, Save, Sparkles, Wand2, X } from 'lucide-react';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -10,6 +10,9 @@ import { Select } from '@/components/ui/Select';
 import { Textarea } from '@/components/ui/Textarea';
 import { ESCALATION_TRIGGERS, OWNER_NEXT_ACTION_OPTIONS, RESOLVED_STATUSES, URGENCY_OPTIONS } from '@/lib/constants';
 import { cn, toInputDate } from '@/lib/utils';
+import { analyzeEscalationDraft, type AITriageAnalysis } from '@/services/aiTriage';
+import { listAIMemories } from '@/services/aiMemory';
+import { listEscalations } from '@/services/escalations';
 import type { Escalation, EscalationPayload } from '@/types';
 
 export type EscalationFormValues = Omit<EscalationPayload, 'created_by'>;
@@ -224,6 +227,8 @@ export function EscalationForm({
   const [selectedTriggers, setSelectedTriggers] = useState<string[]>([]);
   const [quickPaste, setQuickPaste] = useState('');
   const [notice, setNotice] = useState('');
+  const [aiAnalysis, setAiAnalysis] = useState<AITriageAnalysis | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
   const [estimatePhotoFiles, setEstimatePhotoFiles] = useState<File[]>([]);
   const [moreInfoScreenshotFiles, setMoreInfoScreenshotFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -233,6 +238,7 @@ export function EscalationForm({
     setValues(fromEscalation(initialEscalation));
     setQuickPaste('');
     setNotice('');
+    setAiAnalysis(null);
     setEstimatePhotoFiles([]);
     setMoreInfoScreenshotFiles([]);
   }, [initialEscalation]);
@@ -251,8 +257,47 @@ export function EscalationForm({
     }
 
     setValues((current) => parseQuickEscalation(pasted, current, sources, topics, statuses));
+    setAiAnalysis(null);
     setError('');
     setNotice('Escalation details were applied to the form. Review anything that was not included in the pasted text.');
+  };
+
+  const runAITriage = async () => {
+    setAiLoading(true);
+    setError('');
+    try {
+      const [history, memories] = await Promise.all([listEscalations(), listAIMemories({ activeOnly: true })]);
+      const analysis = analyzeEscalationDraft(
+        {
+          ...values,
+          hasEstimatePhotos: estimatePhotoFiles.length > 0 || Boolean(initialEscalation?.attachments?.some((item) => item.attachment_category === 'estimate')),
+          hasNeedsMoreInfoScreenshots: moreInfoScreenshotFiles.length > 0 || Boolean(initialEscalation?.attachments?.some((item) => item.attachment_category === 'needs_more_info'))
+        },
+        history.filter((item) => item.id !== initialEscalation?.id),
+        memories
+      );
+      setAiAnalysis(analysis);
+      setNotice('AI triage complete. Review the recommendation before saving or replying.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'AI triage failed.');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const applyAIRecommendation = () => {
+    if (!aiAnalysis) return;
+
+    setValues((current) => ({
+      ...current,
+      urgency: aiAnalysis.recommendedUrgency,
+      status: statuses.includes(aiAnalysis.recommendedStatus) ? aiAnalysis.recommendedStatus : current.status,
+      owner_next_action: aiAnalysis.ownerNextAction,
+      reason_for_escalation: current.reason_for_escalation || aiAnalysis.reasons.join(' '),
+      proposed_next_step: current.proposed_next_step || aiAnalysis.suggestedNextStep,
+      bradley_note: current.bradley_note || (aiAnalysis.decision === 'Needs Bradley' ? aiAnalysis.bradleySummary : current.bradley_note)
+    }));
+    setNotice('AI recommendation applied to the form. Please review before saving.');
   };
 
   const toggleTrigger = (trigger: string) => {
@@ -430,6 +475,127 @@ export function EscalationForm({
             </div>
           </div>
         ) : null}
+
+        <div className="mb-6 rounded-2xl border border-blue-100 bg-blue-50/70 p-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="flex items-start gap-3">
+              <div className="rounded-xl bg-white p-2 text-blue-700 shadow-soft">
+                <Brain className="h-5 w-5" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-slate-900">AI Triage Assistant</p>
+                <p className="text-xs text-slate-600">
+                  Checks this draft against Green Acres SOP triggers and past Bradley decisions. It suggests whether Carl can handle it, more info is needed first, or Bradley should review it.
+                </p>
+              </div>
+            </div>
+            <Button type="button" variant="secondary" onClick={runAITriage} disabled={aiLoading} leftIcon={<Sparkles className="h-4 w-4" />}>
+              {aiLoading ? 'Analyzing...' : 'Analyze with AI'}
+            </Button>
+          </div>
+
+          {aiAnalysis ? (
+            <div className="mt-4 space-y-4 rounded-2xl border border-blue-100 bg-white p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">AI recommendation</p>
+                  <p className="mt-1 text-lg font-bold text-slate-950">{aiAnalysis.decision}</p>
+                  <p className="text-sm text-slate-600">Confidence: {aiAnalysis.confidence}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">{aiAnalysis.recommendedStatus}</span>
+                  <span className="rounded-full bg-ga-50 px-3 py-1 text-xs font-semibold text-ga-800">Owner next: {aiAnalysis.ownerNextAction}</span>
+                </div>
+              </div>
+
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Why</p>
+                  <ul className="mt-2 space-y-1 text-sm text-slate-700">
+                    {aiAnalysis.reasons.map((reason) => <li key={reason}>• {reason}</li>)}
+                  </ul>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Suggested next step</p>
+                  <p className="mt-2 text-sm text-slate-700">{aiAnalysis.suggestedNextStep}</p>
+                </div>
+              </div>
+
+              {aiAnalysis.sopTriggers.length ? (
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">SOP triggered</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {aiAnalysis.sopTriggers.map((trigger) => (
+                      <span key={trigger} className="rounded-full border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-700">{trigger}</span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {aiAnalysis.missingInfo.length ? (
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Missing before reply or estimate</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {aiAnalysis.missingInfo.map((item) => (
+                      <span key={item} className="rounded-full border border-amber-100 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">{item}</span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Suggested customer reply if Carl handles it</p>
+                <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">{aiAnalysis.suggestedReply}</p>
+              </div>
+
+              {aiAnalysis.similarCases.length ? (
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Similar past cases AI found</p>
+                  <div className="mt-2 grid gap-2">
+                    {aiAnalysis.similarCases.map((item) => (
+                      <div key={item.id} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-semibold text-slate-900">{item.customer_name}</span>
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{item.topic}</span>
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{item.status}</span>
+                          <span className="text-xs text-slate-500">Match {item.score}%</span>
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-xs text-slate-500">{item.learned_from}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {aiAnalysis.memoryMatches.length ? (
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">AI memories used</p>
+                  <div className="mt-2 grid gap-2">
+                    {aiAnalysis.memoryMatches.map((item) => (
+                      <div key={item.id} className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-sm">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-semibold text-slate-900">{item.title}</span>
+                          <span className="rounded-full bg-white px-2 py-0.5 text-xs text-emerald-700">{item.memory_type.replace(/_/g, ' ')}</span>
+                          <span className="text-xs text-emerald-700">Match {item.score}%</span>
+                        </div>
+                        <p className="mt-1 line-clamp-3 text-xs text-slate-600">{item.summary}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+                <Button type="button" variant="secondary" onClick={() => navigator.clipboard.writeText(aiAnalysis.suggestedReply)}>
+                  Copy Suggested Reply
+                </Button>
+                <Button type="button" onClick={applyAIRecommendation} leftIcon={<CheckCircle2 className="h-4 w-4" />}>
+                  Apply AI Recommendation
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </div>
 
         <div className="grid gap-5 lg:grid-cols-2">
           <div>
