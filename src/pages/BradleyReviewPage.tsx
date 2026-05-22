@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronRight, Clock, Copy, ExternalLink, Info, Mail, PhoneCall, Reply, Search, ShieldAlert, X } from 'lucide-react';
+import { Check, ChevronRight, Copy, ExternalLink, Image as ImageIcon, Info, Mail, Reply, Search, ShieldAlert, X } from 'lucide-react';
 import { BRADLEY_ACTIONS } from '@/lib/constants';
 import { formatDate, sortEscalations, truncate } from '@/lib/utils';
 import { Button } from '@/components/ui/Button';
@@ -13,12 +13,10 @@ import { listEscalations, updateBradleyAction } from '@/services/escalations';
 import type { Escalation, OwnerNextAction } from '@/types';
 
 const actionIcons: Record<string, JSX.Element> = {
-  'Call Needed': <PhoneCall className="h-4 w-4" />,
   'Direct Reply': <ExternalLink className="h-4 w-4" />,
   'Reply Needed': <Reply className="h-4 w-4" />,
   'Okay Carl, Work This': <Check className="h-4 w-4" />,
-  'Needs More Info': <Info className="h-4 w-4" />,
-  'I Replied': <Clock className="h-4 w-4" />,
+  'Needs More Info': <ImageIcon className="h-4 w-4" />,
   Resolved: <ShieldAlert className="h-4 w-4" />
 };
 
@@ -150,6 +148,7 @@ export function BradleyReviewPage() {
   const [savingHandoff, setSavingHandoff] = useState(false);
   const [selectedReviewItem, setSelectedReviewItem] = useState<Escalation | null>(null);
   const [directReplyItem, setDirectReplyItem] = useState<Escalation | null>(null);
+  const [photoReviewItem, setPhotoReviewItem] = useState<Escalation | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -200,7 +199,8 @@ export function BradleyReviewPage() {
     }
 
     if (label === 'Needs More Info') {
-      startHandoff(item, 'moreInfo');
+      setPhotoReviewItem(item);
+      setSuccess('Reference photos opened. Bradley can review the attached images before deciding what Carl should do next.');
       return;
     }
 
@@ -342,6 +342,17 @@ export function BradleyReviewPage() {
         />
       ) : null}
 
+      {photoReviewItem ? (
+        <PhotoReviewModal
+          item={photoReviewItem}
+          onClose={() => setPhotoReviewItem(null)}
+          onReplyNeeded={() => {
+            setPhotoReviewItem(null);
+            startHandoff(photoReviewItem, 'reply');
+          }}
+        />
+      ) : null}
+
       {handoffItem ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
           <Card className="w-full max-w-2xl">
@@ -445,10 +456,6 @@ function ReviewDetailModal({
   onClose: () => void;
   onAction: (item: Escalation, label: string, status: string, ownerNextAction: OwnerNextAction, note: string) => void;
 }) {
-  const hasCallLink = Boolean(getCallLink(item));
-  const hasReplyThreadLink = Boolean(getReplyThreadLink(item));
-  const hasPhoneNumber = Boolean(getPhoneNumber(item));
-
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/50 p-4" onClick={onClose}>
       <div
@@ -491,11 +498,9 @@ function ReviewDetailModal({
               <OwnerField label="Follow-up" value={formatDate(item.follow_up_date)} />
             </div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-              <p className="font-semibold uppercase tracking-wide text-slate-500">Automation helper</p>
+              <p className="font-semibold uppercase tracking-wide text-slate-500">Review helper</p>
               <p className="mt-1">
-                {hasPhoneNumber ? 'Call Needed will copy the phone number.' : 'No phone number saved yet.'}{' '}
-                {hasCallLink ? 'Call Needed can open the saved call link.' : 'No call link saved yet.'}{' '}
-                {hasReplyThreadLink ? 'Carl-side reply thread link is saved. Direct Reply uses Bradley’s own email or Quo account instead.' : 'No Carl-side reply/email thread link saved yet.'}
+                Needs More Info opens the attached reference photos in a focused popup. Reply Needed lets Bradley write the exact instruction for Carl. Direct Reply helps Bradley use his own email or Quo account.
               </p>
             </div>
           </div>
@@ -513,6 +518,94 @@ function ReviewDetailModal({
                 {action.label}
               </Button>
             ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function PhotoReviewModal({
+  item,
+  onClose,
+  onReplyNeeded
+}: {
+  item: Escalation;
+  onClose: () => void;
+  onReplyNeeded: () => void;
+}) {
+  const attachments = item.attachments ?? [];
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-4" onClick={onClose}>
+      <div
+        className="max-h-[94vh] w-full max-w-5xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-slate-100 p-5">
+          <div>
+            <p className="section-title">Needs more info reference photos</p>
+            <h2 className="mt-2 text-2xl font-bold text-slate-950">{item.customer_name}</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Bradley can review the attached screenshots/photos here before deciding what Carl should gather or reply.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-slate-200 bg-white p-2 text-slate-500 transition hover:bg-slate-50 hover:text-slate-900"
+            aria-label="Close reference photos"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="max-h-[calc(94vh-132px)] overflow-y-auto p-5">
+          {attachments.length ? (
+            <div className="grid gap-4 md:grid-cols-2">
+              {attachments.map((attachment, index) => (
+                <a
+                  key={attachment.id}
+                  href={attachment.file_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="group rounded-2xl border border-slate-200 bg-slate-50 p-3 transition hover:border-ga-300 hover:bg-white"
+                >
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <p className="truncate text-sm font-semibold text-slate-900">Photo {index + 1}</p>
+                    <span className="text-xs font-medium text-slate-500">Open full size</span>
+                  </div>
+                  <img
+                    src={attachment.file_url}
+                    alt={attachment.file_name}
+                    className="max-h-[520px] w-full rounded-xl border border-slate-200 object-contain bg-white"
+                  />
+                </a>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
+              <ImageIcon className="mx-auto h-8 w-8 text-slate-400" />
+              <h3 className="mt-3 text-lg font-semibold text-slate-950">No photos attached</h3>
+              <p className="mt-1 text-sm text-slate-500">
+                Add screenshots or estimate photos on the escalation first so Bradley can review them here.
+              </p>
+            </div>
+          )}
+
+          <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+            <p className="font-semibold text-slate-950">Context</p>
+            <p className="mt-2 whitespace-pre-wrap break-words">{item.situation}</p>
+            <p className="mt-3 font-semibold text-slate-950">Decision needed</p>
+            <p className="mt-2 whitespace-pre-wrap break-words">{item.proposed_next_step}</p>
+          </div>
+
+          <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+            <Button variant="secondary" onClick={onClose}>Close</Button>
+            <Button onClick={onReplyNeeded} leftIcon={<Reply className="h-4 w-4" />}>
+              Write Note for Carl
+            </Button>
           </div>
         </div>
       </div>

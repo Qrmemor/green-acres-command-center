@@ -61,12 +61,6 @@ export const SOURCE_ORDER = ['Quo', 'HomeWorks', 'Gmail', 'Other'];
 
 export const BRADLEY_ACTIONS = [
   {
-    label: 'Call Needed',
-    status: 'Waiting on Bradley',
-    ownerNextAction: 'Bradley',
-    note: 'Bradley marked call needed. Copy the customer phone number and use Bradley’s own phone or Quo account.'
-  },
-  {
     label: 'Direct Reply',
     status: 'Waiting on Bradley',
     ownerNextAction: 'Bradley',
@@ -86,15 +80,9 @@ export const BRADLEY_ACTIONS = [
   },
   {
     label: 'Needs More Info',
-    status: 'Follow-Up Needed',
-    ownerNextAction: 'Carl',
-    note: 'Bradley requested more information. Carl to gather details.'
-  },
-  {
-    label: 'I Replied',
-    status: 'Bradley Replied',
-    ownerNextAction: 'Customer',
-    note: 'Bradley replied directly. Waiting on customer if needed.'
+    status: 'Waiting on Bradley',
+    ownerNextAction: 'Bradley',
+    note: 'Bradley opened the attached reference photos to review what information may be missing.'
   },
   {
     label: 'Resolved',
