@@ -107,6 +107,54 @@ function hasAny(haystack: string, terms: string[]) {
   return terms.some((term) => haystack.includes(term));
 }
 
+function hasCleanupProjectIntent(haystack: string) {
+  return hasAny(haystack, [
+    'clean up',
+    'cleanup',
+    'clean-up',
+    'project work',
+    'mulch',
+    'weeding',
+    'weed',
+    'bush trimming',
+    'bushes',
+    'trimming',
+    'plant install',
+    'planting',
+    'bed work',
+    'garden bed',
+    'landscape bed',
+    'leaf cleanup',
+    'yard cleanup'
+  ]);
+}
+
+function isMowingOrTurfIntent(haystack: string) {
+  return hasAny(haystack, ['mowing', 'mow', 'lawn maintenance', 'weekly lawn', 'turf program', 'turf treatment']);
+}
+
+function isFullyBookedMemory(memoryText: string) {
+  const lower = memoryText.toLowerCase();
+  return hasAny(lower, [
+    'fully booked',
+    'booked until june',
+    'booked out through june',
+    'currently booked until june',
+    'currently booked out through june',
+    'reconnect in june',
+    'trusted contact',
+    'another crew'
+  ]);
+}
+
+function hasFullyBookedCarlMemory(memoryMatches: MemoryMatch[], haystack: string) {
+  if (!hasCleanupProjectIntent(haystack) || isMowingOrTurfIntent(haystack)) return false;
+  return memoryMatches.some((item) => {
+    const memoryText = [item.title, item.summary, ...(item.tags ?? [])].join(' ').toLowerCase();
+    return isFullyBookedMemory(memoryText);
+  });
+}
+
 function detectTriggers(haystack: string, draft: TriageDraft) {
   const triggers: string[] = [];
 
@@ -156,8 +204,18 @@ function detectMissingInfo(draft: TriageDraft, haystack: string) {
 function words(value: string) {
   return value
     .toLowerCase()
+    .replace(/clean[\s-]?up/g, ' cleanup ')
+    .replace(/booked[\s-]?out/g, ' bookedout ')
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
+    .map((word) => {
+      if (['cleaning', 'cleanup', 'cleanups'].includes(word)) return 'cleanup';
+      if (['weeds', 'weeding'].includes(word)) return 'weed';
+      if (['bushes', 'shrubs', 'shrub'].includes(word)) return 'bush';
+      if (['planting', 'plants'].includes(word)) return 'plant';
+      if (['mulching'].includes(word)) return 'mulch';
+      return word;
+    })
     .filter((word) => word.length > 2 && !STOP_WORDS.has(word));
 }
 
@@ -228,6 +286,16 @@ function findMemoryMatches(draft: TriageDraft, memories: AIMemory[]) {
       if (draftSource && tags.includes(draftSource)) score += 8;
       if (memory.confidence === 'high') score += 8;
       if (memory.memory_type === 'sop_rule') score += 5;
+
+      const combinedMemoryText = memoryText.toLowerCase();
+      if (hasCleanupProjectIntent(draftText) && !isMowingOrTurfIntent(draftText) && isFullyBookedMemory(combinedMemoryText)) {
+        score = Math.max(score, 86);
+      }
+
+      if (hasAny(draftText, ['payment setup', 'automatic payment', 'invoice']) && hasAny(combinedMemoryText, ['payment setup', 'invoice', 'pending invoice', 'homeworks'])) {
+        score = Math.max(score, 78);
+      }
+
       score = Math.min(score, 100);
 
       return {
@@ -245,9 +313,13 @@ function findMemoryMatches(draft: TriageDraft, memories: AIMemory[]) {
     .slice(0, 5);
 }
 
-function makeSuggestedReply(decision: TriageDecision, draft: TriageDraft, missingInfo: string[]) {
+function makeSuggestedReply(decision: TriageDecision, draft: TriageDraft, missingInfo: string[], options: { fullyBookedCleanup?: boolean } = {}) {
   const name = text(draft.customer_name).split(' ')[0] || 'there';
   const topic = text(draft.topic).toLowerCase();
+
+  if (options.fullyBookedCleanup) {
+    return `Hi ${name}, this is Carl with Green Acres. Thanks for reaching out. I did want to be upfront that we are currently booked out through June for project work like cleanup, mulch, weeding, bush trimming, plant installs, and bed work. We can reconnect in June and reassess the scope then, or if timing is important, I’d be happy to connect you with a trusted contact who may be able to get to it sooner. Just let me know what works best on your end.`;
+  }
 
   if (decision === 'Need more info first') {
     const missingText = missingInfo.slice(0, 4).join(', ').toLowerCase();
@@ -273,12 +345,15 @@ export function analyzeEscalationDraft(draft: TriageDraft, history: Escalation[]
   const memoryMatches = findMemoryMatches(draft, memories);
   const hasHighRisk = sopTriggers.some((trigger) => HIGH_RISK_TRIGGERS.has(trigger));
   const hasPricingOrOwnerDecision = sopTriggers.some((trigger) => ['Pricing unclear', 'Customer wants a call'].includes(trigger));
-  const similarNeedsBradley = similarCases.some((item) => ['Needs Bradley', 'Waiting on Bradley'].includes(item.status) || item.urgency === 'Urgent / Customer-Sensitive');
-  const memorySuggestsEscalation = memoryMatches.some((item) => /needs bradley|owner review|escalate|bradley should|bradley needs/i.test(item.summary));
-  const memorySuggestsCarlCanHandle = memoryMatches.some((item) => /carl can handle|do not escalate|ask for photos|request photos|collect missing/i.test(item.summary));
+  const fullyBookedCleanup = hasFullyBookedCarlMemory(memoryMatches, haystack);
+  const strongSimilarNeedsBradley = similarCases.some((item) => item.score >= 55 && (['Needs Bradley', 'Waiting on Bradley'].includes(item.status) || item.urgency === 'Urgent / Customer-Sensitive'));
+  const memorySuggestsEscalation = !fullyBookedCleanup && memoryMatches.some((item) => /needs bradley|owner review|escalate|bradley should|bradley needs/i.test(item.summary));
+  const memorySuggestsCarlCanHandle = fullyBookedCleanup || memoryMatches.some((item) => /carl can handle|do not escalate|ask for photos|request photos|collect missing|booked out through june|booked until june|currently booked|trusted contact|reconnect in june/i.test(`${item.title} ${item.summary}`));
 
   let decision: TriageDecision;
-  if (hasHighRisk || hasPricingOrOwnerDecision || similarNeedsBradley || memorySuggestsEscalation) {
+  if (fullyBookedCleanup) {
+    decision = 'Carl can handle';
+  } else if (hasHighRisk || hasPricingOrOwnerDecision || strongSimilarNeedsBradley || memorySuggestsEscalation) {
     decision = 'Needs Bradley';
   } else if (missingInfo.length > 0 || memorySuggestsCarlCanHandle) {
     decision = 'Need more info first';
@@ -291,23 +366,26 @@ export function analyzeEscalationDraft(draft: TriageDraft, history: Escalation[]
   const ownerNextAction: OwnerNextAction = decision === 'Needs Bradley' ? 'Bradley' : 'Carl';
 
   const reasons: string[] = [];
-  if (sopTriggers.length) reasons.push(`SOP trigger${sopTriggers.length > 1 ? 's' : ''}: ${sopTriggers.join(', ')}.`);
-  if (missingInfo.length && decision !== 'Needs Bradley') reasons.push(`Missing intake details: ${missingInfo.join(', ')}.`);
-  if (similarCases.length) reasons.push(`Found ${similarCases.length} similar past case${similarCases.length > 1 ? 's' : ''} in the dashboard.`);
+  if (fullyBookedCleanup) reasons.push('Matched the saved Fully booked cleanup/project SOP, so Carl can handle this without escalating unless the customer pushes back or scope becomes unusual.');
+  if (sopTriggers.length && !fullyBookedCleanup) reasons.push(`SOP trigger${sopTriggers.length > 1 ? 's' : ''}: ${sopTriggers.join(', ')}.`);
+  if (missingInfo.length && decision !== 'Needs Bradley') reasons.push(`Missing intake details still helpful to collect: ${missingInfo.join(', ')}.`);
+  if (similarCases.length) reasons.push(`Found ${similarCases.length} similar past case${similarCases.length > 1 ? 's' : ''} in the dashboard, but only strong matches should override SOP memory.`);
   if (memoryMatches.length) reasons.push(`Found ${memoryMatches.length} AI memory match${memoryMatches.length > 1 ? 'es' : ''} from prior Bradley/Carl decisions.`);
   if (!reasons.length) reasons.push('No high-risk escalation trigger found from the current text.');
 
-  const confidence: TriageConfidence = hasHighRisk || sopTriggers.length >= 2 || similarCases[0]?.score >= 45 || memoryMatches.some((item) => item.confidence === 'high' && item.score >= 35)
+  const confidence: TriageConfidence = fullyBookedCleanup || hasHighRisk || sopTriggers.length >= 2 || similarCases[0]?.score >= 55 || memoryMatches.some((item) => item.confidence === 'high' && item.score >= 35)
     ? 'High'
     : sopTriggers.length || missingInfo.length || similarCases.length
       ? 'Medium'
       : 'Low';
 
-  const suggestedNextStep = decision === 'Needs Bradley'
-    ? 'Escalate to Bradley with a short decision request, reason, and proposed next step.'
-    : decision === 'Need more info first'
-      ? `Do not escalate yet. Ask the customer for: ${missingInfo.slice(0, 4).join(', ') || 'the missing intake details'}.`
-      : 'Carl can reply using the SOP and keep the item tracked without sending it to Bradley.';
+  const suggestedNextStep = fullyBookedCleanup
+    ? 'Do not escalate yet. Use the saved fully-booked cleanup/project message. Collect missing contact/property details only if needed for tracking.'
+    : decision === 'Needs Bradley'
+      ? 'Escalate to Bradley with a short decision request, reason, and proposed next step.'
+      : decision === 'Need more info first'
+        ? `Do not escalate yet. Ask the customer for: ${missingInfo.slice(0, 4).join(', ') || 'the missing intake details'}.`
+        : 'Carl can reply using the SOP and keep the item tracked without sending it to Bradley.';
 
   const bradleySummary = decision === 'Needs Bradley'
     ? `${text(draft.customer_name) || 'Customer'} needs Bradley direction. ${text(draft.reason_for_escalation) || sopTriggers.join(', ') || 'Owner decision appears needed.'}`
@@ -332,7 +410,7 @@ export function analyzeEscalationDraft(draft: TriageDraft, history: Escalation[]
     missingInfo,
     reasons,
     suggestedNextStep,
-    suggestedReply: makeSuggestedReply(decision, draft, missingInfo),
+    suggestedReply: makeSuggestedReply(decision, draft, missingInfo, { fullyBookedCleanup }),
     bradleySummary,
     patternSummary,
     memoryPatternSummary,
