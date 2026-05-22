@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { type ClipboardEvent, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, ClipboardPaste, ImagePlus, Save, Wand2, X } from 'lucide-react';
 import { Alert } from '@/components/ui/Alert';
@@ -268,7 +268,7 @@ export function EscalationForm({
 
 
 
-  const addAttachmentFiles = (type: 'estimate' | 'needs_more_info', files: FileList | null) => {
+  const addAttachmentFiles = (type: 'estimate' | 'needs_more_info', files: FileList | File[] | null) => {
     const selected = Array.from(files ?? []);
     if (!selected.length) return;
 
@@ -287,6 +287,33 @@ export function EscalationForm({
     setError('');
     const setter = type === 'estimate' ? setEstimatePhotoFiles : setMoreInfoScreenshotFiles;
     setter((current) => [...current, ...selected]);
+  };
+
+  const pasteImageFiles = (type: 'estimate' | 'needs_more_info', event: ClipboardEvent<HTMLDivElement>) => {
+    const pastedImages = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item, index) => {
+        const file = item.getAsFile();
+        if (!file) return null;
+
+        const extension = file.type.split('/')[1] || 'png';
+        return new File(
+          [file],
+          `${type === 'estimate' ? 'estimate-photo' : 'conversation-screenshot'}-${Date.now()}-${index}.${extension}`,
+          { type: file.type }
+        );
+      })
+      .filter((file): file is File => Boolean(file));
+
+    if (!pastedImages.length) return;
+
+    event.preventDefault();
+    addAttachmentFiles(type, pastedImages);
+    setNotice(
+      type === 'estimate'
+        ? `${pastedImages.length} estimate image${pastedImages.length > 1 ? 's' : ''} pasted from clipboard.`
+        : `${pastedImages.length} Needs More Info screenshot${pastedImages.length > 1 ? 's' : ''} pasted from clipboard.`
+    );
   };
 
   const removeAttachmentFile = (type: 'estimate' | 'needs_more_info', index: number) => {
@@ -508,14 +535,18 @@ export function EscalationForm({
 
           <div className="lg:col-span-2">
             <Label htmlFor="estimate_photos">Estimate Photos / Reference Images</Label>
-            <div className="mt-2 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4">
+            <div
+              className="mt-2 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 focus-within:ring-2 focus-within:ring-ga-600/20"
+              tabIndex={0}
+              onPaste={(event) => pasteImageFiles('estimate', event)}
+            >
               <label
                 htmlFor="estimate_photos"
                 className="flex cursor-pointer flex-col items-center justify-center rounded-xl bg-white p-5 text-center transition hover:bg-ga-50"
               >
                 <ImagePlus className="h-8 w-8 text-ga-700" />
                 <span className="mt-2 text-sm font-semibold text-slate-900">Attach estimate/site photos</span>
-                <span className="mt-1 text-xs text-slate-500">Use this for lawn, beds, damage, access, or reference photos. Images only, max 10 MB each.</span>
+                <span className="mt-1 text-xs text-slate-500">Use this for lawn, beds, damage, access, or reference photos. You can choose files or click this box and press Ctrl+V to paste a copied image.</span>
                 <input
                   id="estimate_photos"
                   type="file"
@@ -558,14 +589,18 @@ export function EscalationForm({
 
           <div className="lg:col-span-2">
             <Label htmlFor="needs_more_info_screenshots">Needs More Info Screenshots / Conversation Context</Label>
-            <div className="mt-2 rounded-2xl border border-dashed border-amber-300 bg-amber-50/50 p-4">
+            <div
+              className="mt-2 rounded-2xl border border-dashed border-amber-300 bg-amber-50/50 p-4 focus-within:ring-2 focus-within:ring-amber-500/20"
+              tabIndex={0}
+              onPaste={(event) => pasteImageFiles('needs_more_info', event)}
+            >
               <label
                 htmlFor="needs_more_info_screenshots"
                 className="flex cursor-pointer flex-col items-center justify-center rounded-xl bg-white p-5 text-center transition hover:bg-amber-50"
               >
                 <ImagePlus className="h-8 w-8 text-amber-700" />
                 <span className="mt-2 text-sm font-semibold text-slate-900">Attach screenshots of full details or customer conversation</span>
-                <span className="mt-1 text-xs text-slate-500">Use this for screenshots Bradley should read when he clicks Needs More Info. Images only, max 10 MB each.</span>
+                <span className="mt-1 text-xs text-slate-500">Use this for screenshots Bradley should read when he clicks Needs More Info. You can choose files or click this box and press Ctrl+V to paste a screenshot.</span>
                 <input
                   id="needs_more_info_screenshots"
                   type="file"
@@ -603,7 +638,7 @@ export function EscalationForm({
                 </div>
               ) : null}
             </div>
-            <p className="field-helper">These are separate from estimate photos. Bradley sees these in a focused popup when he clicks Needs More Info.</p>
+            <p className="field-helper">These are separate from estimate photos. Tip: use Win + Shift + S, capture the conversation screenshot, then click the box above and press Ctrl+V.</p>
           </div>
 
           <div className="lg:col-span-2">

@@ -623,7 +623,6 @@ function DirectReplyModal({
   const [localMessage, setLocalMessage] = useState('');
   const customerEmail = getCustomerEmail(item);
   const phoneNumber = getPhoneNumber(item);
-  const suggestedNote = item.bradley_note || '';
   const canUseEmail = Boolean(customerEmail);
   const canUseQuo = Boolean(phoneNumber);
 
@@ -713,18 +712,6 @@ function DirectReplyModal({
                   Open Quo
                 </Button>
               </div>
-            </div>
-          </div>
-
-          <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Context / suggested note</p>
-            <p className="mt-2 whitespace-pre-wrap break-words text-sm text-slate-800">
-              {suggestedNote || item.proposed_next_step || 'No Bradley note saved yet.'}
-            </p>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Button size="sm" variant="secondary" leftIcon={<Copy className="h-4 w-4" />} onClick={() => copyValue(suggestedNote || item.proposed_next_step, 'Note')}>
-                Copy Note
-              </Button>
             </div>
           </div>
 
