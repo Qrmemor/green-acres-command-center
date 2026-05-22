@@ -9,12 +9,12 @@ import { Textarea } from '@/components/ui/Textarea';
 import { SourceBadge, StatusBadge, UrgencyBadge } from '@/components/common/Badges';
 import { AttachmentGallery } from '@/components/common/AttachmentGallery';
 import { LoadingState } from '@/components/common/LoadingState';
-import { EscalationForm, type EscalationFormValues } from '@/components/forms/EscalationForm';
+import { EscalationForm, type EscalationFormAttachments, type EscalationFormValues } from '@/components/forms/EscalationForm';
 import { addComment, archiveEscalation, deleteEscalation, getEscalation, listActivityLogs, listComments, updateEscalation } from '@/services/escalations';
 import { deleteEscalationAttachment, listEscalationAttachments, uploadEscalationAttachments } from '@/services/attachments';
 import { fallbackOptions, getWorkspaceOptions, type WorkspaceOptions } from '@/services/settingsOptions';
 import { formatDate, formatDateTime } from '@/lib/utils';
-import type { ActivityLog, Comment, Escalation, EscalationAttachment } from '@/types';
+import type { ActivityLog, AttachmentCategory, Comment, Escalation, EscalationAttachment } from '@/types';
 
 export function EscalationDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -63,11 +63,14 @@ export function EscalationDetailPage() {
   }, [id]);
 
   const contactLine = useMemo(() => [item?.phone, item?.email].filter(Boolean).join(' • '), [item]);
+  const estimateAttachments = attachments.filter((attachment) => (attachment.attachment_category ?? 'estimate') === 'estimate');
+  const moreInfoAttachments = attachments.filter((attachment) => attachment.attachment_category === 'needs_more_info');
 
-  const saveEdit = async (values: EscalationFormValues, newAttachments: File[]) => {
+  const saveEdit = async (values: EscalationFormValues, newAttachments: EscalationFormAttachments) => {
     if (!id) return;
     await updateEscalation(id, values, 'Carl updated next step');
-    if (newAttachments.length) await uploadEscalationAttachments(id, newAttachments);
+    if (newAttachments.estimatePhotos.length) await uploadEscalationAttachments(id, newAttachments.estimatePhotos, 'estimate');
+    if (newAttachments.moreInfoScreenshots.length) await uploadEscalationAttachments(id, newAttachments.moreInfoScreenshots, 'needs_more_info');
     setSearchParams({});
     await load();
   };
@@ -87,7 +90,7 @@ export function EscalationDetailPage() {
     }
   };
 
-  const uploadPhotos = async (event: ChangeEvent<HTMLInputElement>) => {
+  const uploadPhotos = async (event: ChangeEvent<HTMLInputElement>, category: AttachmentCategory) => {
     if (!id) return;
     const files = Array.from(event.target.files ?? []);
     event.target.value = '';
@@ -108,7 +111,7 @@ export function EscalationDetailPage() {
     setUploadingPhotos(true);
     setAttachmentError('');
     try {
-      await uploadEscalationAttachments(id, files);
+      await uploadEscalationAttachments(id, files, category);
       await load();
     } catch (err) {
       setAttachmentError(err instanceof Error ? err.message : 'Unable to upload photos.');
@@ -178,7 +181,7 @@ export function EscalationDetailPage() {
             <SourceBadge source={item.source} />
             <StatusBadge status={item.status} />
             <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
-              <CalendarClock className="h-3.5 w-3.5" /> Follow-up: {formatDate(item.follow_up_date)}
+              <CalendarClock className="h-3.5 w-3.5" /> Escalated: {formatDate(item.follow_up_date)}
             </span>
           </div>
 
@@ -197,7 +200,7 @@ export function EscalationDetailPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Estimate photos</CardTitle>
+          <CardTitle>Estimate photos / reference images</CardTitle>
           <CardDescription>Attach customer photos, site photos, or reference images for Bradley's estimate review.</CardDescription>
         </CardHeader>
         <CardContent>
@@ -205,14 +208,34 @@ export function EscalationDetailPage() {
           <div className="mb-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4">
             <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl bg-white p-5 text-center transition hover:bg-ga-50">
               <ImagePlus className="h-8 w-8 text-ga-700" />
-              <span className="mt-2 text-sm font-semibold text-slate-900">Upload photos</span>
+              <span className="mt-2 text-sm font-semibold text-slate-900">Upload estimate/site photos</span>
               <span className="mt-1 text-xs text-slate-500">Images only, max 10 MB each. You can select multiple files.</span>
-              <input type="file" accept="image/*" multiple className="hidden" onChange={uploadPhotos} disabled={uploadingPhotos} />
+              <input type="file" accept="image/*" multiple className="hidden" onChange={(event) => uploadPhotos(event, 'estimate')} disabled={uploadingPhotos} />
             </label>
             {uploadingPhotos ? <p className="mt-3 text-center text-sm text-slate-500">Uploading photos...</p> : null}
           </div>
-          <AttachmentGallery attachments={attachments} onDelete={removeAttachment} />
-          {!attachments.length ? <p className="text-sm text-slate-500">No estimate photos attached yet.</p> : null}
+          <AttachmentGallery attachments={estimateAttachments} onDelete={removeAttachment} />
+          {!estimateAttachments.length ? <p className="text-sm text-slate-500">No estimate photos attached yet.</p> : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Needs More Info screenshots / conversation context</CardTitle>
+          <CardDescription>Attach screenshots of the full customer conversation or extra context Bradley should read when he clicks Needs More Info.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="mb-4 rounded-2xl border border-dashed border-amber-300 bg-amber-50/50 p-4">
+            <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl bg-white p-5 text-center transition hover:bg-amber-50">
+              <ImagePlus className="h-8 w-8 text-amber-700" />
+              <span className="mt-2 text-sm font-semibold text-slate-900">Upload conversation screenshots</span>
+              <span className="mt-1 text-xs text-slate-500">Images only, max 10 MB each. These are separate from estimate photos.</span>
+              <input type="file" accept="image/*" multiple className="hidden" onChange={(event) => uploadPhotos(event, 'needs_more_info')} disabled={uploadingPhotos} />
+            </label>
+            {uploadingPhotos ? <p className="mt-3 text-center text-sm text-slate-500">Uploading screenshots...</p> : null}
+          </div>
+          <AttachmentGallery attachments={moreInfoAttachments} title="Needs More Info screenshots" onDelete={removeAttachment} />
+          {!moreInfoAttachments.length ? <p className="text-sm text-slate-500">No Needs More Info screenshots attached yet.</p> : null}
         </CardContent>
       </Card>
 

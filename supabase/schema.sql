@@ -68,6 +68,7 @@ create table if not exists public.comments (
 create table if not exists public.escalation_attachments (
   id uuid primary key default gen_random_uuid(),
   escalation_id uuid not null references public.escalations(id) on delete cascade,
+  attachment_category text not null default 'estimate' check (attachment_category in ('estimate', 'needs_more_info')),
   file_name text not null,
   file_path text not null,
   file_url text not null,
@@ -168,6 +169,7 @@ create index if not exists idx_escalations_resolved_at on public.escalations(res
 create index if not exists idx_activity_logs_escalation_id on public.activity_logs(escalation_id);
 create index if not exists idx_comments_escalation_id on public.comments(escalation_id);
 create index if not exists idx_escalation_attachments_escalation_id on public.escalation_attachments(escalation_id);
+create index if not exists idx_escalation_attachments_category on public.escalation_attachments(attachment_category);
 create index if not exists idx_settings_options_category on public.settings_options(category);
 
 -- RLS -----------------------------------------------------------

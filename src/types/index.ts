@@ -12,9 +12,12 @@ export interface UserProfile {
 }
 
 
+export type AttachmentCategory = 'estimate' | 'needs_more_info';
+
 export interface EscalationAttachment {
   id: string;
   escalation_id: string;
+  attachment_category: AttachmentCategory | null;
   file_name: string;
   file_path: string;
   file_url: string;

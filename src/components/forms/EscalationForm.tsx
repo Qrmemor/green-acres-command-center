@@ -13,7 +13,11 @@ import { cn, toInputDate } from '@/lib/utils';
 import type { Escalation, EscalationPayload } from '@/types';
 
 export type EscalationFormValues = Omit<EscalationPayload, 'created_by'>;
-export type EscalationFormSubmit = (values: EscalationFormValues, attachments: File[]) => Promise<void>;
+export interface EscalationFormAttachments {
+  estimatePhotos: File[];
+  moreInfoScreenshots: File[];
+}
+export type EscalationFormSubmit = (values: EscalationFormValues, attachments: EscalationFormAttachments) => Promise<void>;
 
 interface EscalationFormProps {
   initialEscalation?: Escalation | null;
@@ -220,7 +224,8 @@ export function EscalationForm({
   const [selectedTriggers, setSelectedTriggers] = useState<string[]>([]);
   const [quickPaste, setQuickPaste] = useState('');
   const [notice, setNotice] = useState('');
-  const [attachmentFiles, setAttachmentFiles] = useState<File[]>([]);
+  const [estimatePhotoFiles, setEstimatePhotoFiles] = useState<File[]>([]);
+  const [moreInfoScreenshotFiles, setMoreInfoScreenshotFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -228,7 +233,8 @@ export function EscalationForm({
     setValues(fromEscalation(initialEscalation));
     setQuickPaste('');
     setNotice('');
-    setAttachmentFiles([]);
+    setEstimatePhotoFiles([]);
+    setMoreInfoScreenshotFiles([]);
   }, [initialEscalation]);
 
   const requiresFollowUp = useMemo(() => !RESOLVED_STATUSES.includes(values.status), [values.status]);
@@ -262,7 +268,7 @@ export function EscalationForm({
 
 
 
-  const addAttachmentFiles = (files: FileList | null) => {
+  const addAttachmentFiles = (type: 'estimate' | 'needs_more_info', files: FileList | null) => {
     const selected = Array.from(files ?? []);
     if (!selected.length) return;
 
@@ -279,11 +285,13 @@ export function EscalationForm({
     }
 
     setError('');
-    setAttachmentFiles((current) => [...current, ...selected]);
+    const setter = type === 'estimate' ? setEstimatePhotoFiles : setMoreInfoScreenshotFiles;
+    setter((current) => [...current, ...selected]);
   };
 
-  const removeAttachmentFile = (index: number) => {
-    setAttachmentFiles((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  const removeAttachmentFile = (type: 'estimate' | 'needs_more_info', index: number) => {
+    const setter = type === 'estimate' ? setEstimatePhotoFiles : setMoreInfoScreenshotFiles;
+    setter((current) => current.filter((_, itemIndex) => itemIndex !== index));
   };
 
   const validate = () => {
@@ -302,7 +310,7 @@ export function EscalationForm({
       if (!String(values[key] ?? '').trim()) return message;
     }
 
-    if (requiresFollowUp && !values.follow_up_date) return 'Follow-up date is required unless item is Resolved, Closed, or Not a Fit.';
+    if (requiresFollowUp && !values.follow_up_date) return 'Escalation date is required unless item is Resolved, Closed, or Not a Fit.';
     return '';
   };
 
@@ -329,14 +337,15 @@ export function EscalationForm({
       };
 
       if (addAnother && onSubmitAndAddAnother) {
-        await onSubmitAndAddAnother(normalized, attachmentFiles);
+        await onSubmitAndAddAnother(normalized, { estimatePhotos: estimatePhotoFiles, moreInfoScreenshots: moreInfoScreenshotFiles });
         setValues(blankValues);
         setSelectedTriggers([]);
         setQuickPaste('');
         setNotice('');
-        setAttachmentFiles([]);
+        setEstimatePhotoFiles([]);
+    setMoreInfoScreenshotFiles([]);
       } else {
-        await onSubmit(normalized, attachmentFiles);
+        await onSubmit(normalized, { estimatePhotos: estimatePhotoFiles, moreInfoScreenshots: moreInfoScreenshotFiles });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong while saving the escalation.');
@@ -429,26 +438,6 @@ export function EscalationForm({
             <Input id="source_detail" value={values.source_detail ?? ''} onChange={(event) => setField('source_detail', event.target.value)} placeholder="e.g. team@ thread, Quo text, HomeWorks profile" />
           </div>
 
-          <div>
-            <Label htmlFor="call_link">Call Link / OpenPhone Link</Label>
-            <Input
-              id="call_link"
-              value={values.call_link ?? ''}
-              onChange={(event) => setField('call_link', event.target.value)}
-              placeholder="Optional OpenPhone or Quo call/text link"
-            />
-            <p className="field-helper">Used only by Call Needed. Bradley can copy the phone number and open this call/text link without opening the email thread.</p>
-          </div>
-          <div>
-            <Label htmlFor="thread_link">Reply / Email Thread Link</Label>
-            <Input
-              id="thread_link"
-              value={values.thread_link ?? ''}
-              onChange={(event) => setField('thread_link', event.target.value)}
-              placeholder="Optional Gmail, Quo, or HomeWorks reply thread link"
-            />
-            <p className="field-helper">Used by I Replied and Needs More Info. This should be the place Bradley continues or reviews the reply thread.</p>
-          </div>
 
           <div>
             <Label htmlFor="urgency">Urgency *</Label>
@@ -469,9 +458,9 @@ export function EscalationForm({
             />
           </div>
           <div>
-            <Label htmlFor="follow_up_date">Follow-Up Date {requiresFollowUp ? '*' : ''}</Label>
+            <Label htmlFor="follow_up_date">Escalation Date {requiresFollowUp ? '*' : ''}</Label>
             <Input id="follow_up_date" type="date" value={values.follow_up_date ?? ''} onChange={(event) => setField('follow_up_date', event.target.value)} />
-            <p className="field-helper">Required for anything still open so the ball does not sit in the middle.</p>
+            <p className="field-helper">Use the date you escalated this item to Bradley.</p>
           </div>
         </div>
 
@@ -525,8 +514,8 @@ export function EscalationForm({
                 className="flex cursor-pointer flex-col items-center justify-center rounded-xl bg-white p-5 text-center transition hover:bg-ga-50"
               >
                 <ImagePlus className="h-8 w-8 text-ga-700" />
-                <span className="mt-2 text-sm font-semibold text-slate-900">Attach photos for estimate review</span>
-                <span className="mt-1 text-xs text-slate-500">Upload lawn, beds, damage, access, or reference photos. Images only, max 10 MB each.</span>
+                <span className="mt-2 text-sm font-semibold text-slate-900">Attach estimate/site photos</span>
+                <span className="mt-1 text-xs text-slate-500">Use this for lawn, beds, damage, access, or reference photos. Images only, max 10 MB each.</span>
                 <input
                   id="estimate_photos"
                   type="file"
@@ -534,17 +523,17 @@ export function EscalationForm({
                   multiple
                   className="hidden"
                   onChange={(event) => {
-                    addAttachmentFiles(event.target.files);
+                    addAttachmentFiles('estimate', event.target.files);
                     event.target.value = '';
                   }}
                 />
               </label>
 
-              {attachmentFiles.length ? (
+              {estimatePhotoFiles.length ? (
                 <div className="mt-4 space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selected photos</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selected estimate photos</p>
                   <div className="grid gap-2 sm:grid-cols-2">
-                    {attachmentFiles.map((file, index) => (
+                    {estimatePhotoFiles.map((file, index) => (
                       <div key={`${file.name}-${file.lastModified}-${index}`} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
                         <div className="min-w-0">
                           <p className="truncate font-medium text-slate-800">{file.name}</p>
@@ -552,7 +541,7 @@ export function EscalationForm({
                         </div>
                         <button
                           type="button"
-                          onClick={() => removeAttachmentFile(index)}
+                          onClick={() => removeAttachmentFile('estimate', index)}
                           className="rounded-full p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
                           aria-label={`Remove ${file.name}`}
                         >
@@ -564,7 +553,57 @@ export function EscalationForm({
                 </div>
               ) : null}
             </div>
-            <p className="field-helper">For estimate items, attach customer photos so Bradley can review scope without opening the original thread.</p>
+            <p className="field-helper">For estimate items, attach customer photos so Bradley can review the physical scope quickly.</p>
+          </div>
+
+          <div className="lg:col-span-2">
+            <Label htmlFor="needs_more_info_screenshots">Needs More Info Screenshots / Conversation Context</Label>
+            <div className="mt-2 rounded-2xl border border-dashed border-amber-300 bg-amber-50/50 p-4">
+              <label
+                htmlFor="needs_more_info_screenshots"
+                className="flex cursor-pointer flex-col items-center justify-center rounded-xl bg-white p-5 text-center transition hover:bg-amber-50"
+              >
+                <ImagePlus className="h-8 w-8 text-amber-700" />
+                <span className="mt-2 text-sm font-semibold text-slate-900">Attach screenshots of full details or customer conversation</span>
+                <span className="mt-1 text-xs text-slate-500">Use this for screenshots Bradley should read when he clicks Needs More Info. Images only, max 10 MB each.</span>
+                <input
+                  id="needs_more_info_screenshots"
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => {
+                    addAttachmentFiles('needs_more_info', event.target.files);
+                    event.target.value = '';
+                  }}
+                />
+              </label>
+
+              {moreInfoScreenshotFiles.length ? (
+                <div className="mt-4 space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selected needs-more-info screenshots</p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {moreInfoScreenshotFiles.map((file, index) => (
+                      <div key={`${file.name}-${file.lastModified}-${index}`} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                        <div className="min-w-0">
+                          <p className="truncate font-medium text-slate-800">{file.name}</p>
+                          <p className="text-xs text-slate-500">{(file.size / (1024 * 1024)).toFixed(1)} MB</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeAttachmentFile('needs_more_info', index)}
+                          className="rounded-full p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                          aria-label={`Remove ${file.name}`}
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+            <p className="field-helper">These are separate from estimate photos. Bradley sees these in a focused popup when he clicks Needs More Info.</p>
           </div>
 
           <div className="lg:col-span-2">
@@ -575,7 +614,7 @@ export function EscalationForm({
               onChange={(event) => setField('where_to_continue', event.target.value)}
               placeholder="Example: Reply in Quo thread with phone ending 1234, or continue in team@ Gmail thread."
             />
-            <p className="field-helper">This is the human-readable instruction, like Reply in Quo or continue in team@ Gmail. Use the separate Call Link or Reply Thread Link fields for clickable links.</p>
+            <p className="field-helper">This is the human-readable instruction, like Reply in Quo or continue in team@ Gmail. Keep this human-readable, for example: Reply in Quo thread, continue in team@ Gmail, or review in HomeWorks.</p>
           </div>
         </div>
 

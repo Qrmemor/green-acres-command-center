@@ -47,20 +47,17 @@ function stripDirectLinks(value?: string | null) {
 }
 
 function getContinueLabel(item: Escalation) {
-  const callLink = getCallLink(item);
-  const replyLink = getReplyThreadLink(item);
   const cleanedContinue = stripDirectLinks(item.where_to_continue);
   const cleanedSourceDetail = stripDirectLinks(item.source_detail);
-  const cleanText = cleanedContinue || cleanedSourceDetail || item.where_to_continue;
+  return cleanedContinue || cleanedSourceDetail || item.source || 'No continue instruction saved';
+}
 
-  const savedLinks = [
-    callLink ? 'Call link saved' : '',
-    replyLink ? 'Reply thread link saved' : ''
-  ].filter(Boolean).join(' · ');
+function getEstimateAttachments(item: Escalation) {
+  return (item.attachments ?? []).filter((attachment) => (attachment.attachment_category ?? 'estimate') === 'estimate');
+}
 
-  if (cleanText && savedLinks) return `${cleanText} · ${savedLinks}`;
-  if (savedLinks) return savedLinks;
-  return cleanText;
+function getNeedsMoreInfoScreenshots(item: Escalation) {
+  return (item.attachments ?? []).filter((attachment) => attachment.attachment_category === 'needs_more_info');
 }
 
 function getPhoneNumber(item: Escalation) {
@@ -200,7 +197,7 @@ export function BradleyReviewPage() {
 
     if (label === 'Needs More Info') {
       setPhotoReviewItem(item);
-      setSuccess('Reference photos opened. Bradley can review the attached images before deciding what Carl should do next.');
+      setSuccess('Needs More Info screenshots opened. Bradley can review the full conversation/context before deciding what Carl should do next.');
       return;
     }
 
@@ -303,7 +300,7 @@ export function BradleyReviewPage() {
       <div>
         <p className="section-title">Owner view</p>
         <h1 className="mt-2 text-3xl font-bold text-slate-950">Bradley Review</h1>
-        <p className="mt-2 max-w-2xl text-sm text-slate-500">A simple decision inbox. Call actions use the call link, reply actions use the reply or email thread link, and Bradley can hand clear notes back to Carl.</p>
+        <p className="mt-2 max-w-2xl text-sm text-slate-500">A simple decision inbox. Bradley can review estimate photos, open conversation screenshots for Needs More Info, or hand clear notes back to Carl.</p>
       </div>
 
       {error ? <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div> : null}
@@ -491,16 +488,16 @@ function ReviewDetailModal({
             <OwnerField label="Decision needed" value={item.proposed_next_step} strong />
             <OwnerField label="Why Bradley is needed" value={item.reason_for_escalation} />
             <OwnerField label="Situation" value={item.situation} />
-            <AttachmentGallery attachments={item.attachments} compact />
+            <AttachmentGallery attachments={getEstimateAttachments(item)} title="Estimate photos / reference images" compact />
             {item.bradley_note ? <OwnerField label="Current Bradley note" value={item.bradley_note} strong /> : null}
             <div className="grid gap-3 sm:grid-cols-2">
               <OwnerField label="Continue in" value={getContinueLabel(item)} />
-              <OwnerField label="Follow-up" value={formatDate(item.follow_up_date)} />
+              <OwnerField label="Escalated date" value={formatDate(item.follow_up_date)} />
             </div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
               <p className="font-semibold uppercase tracking-wide text-slate-500">Review helper</p>
               <p className="mt-1">
-                Needs More Info opens the attached reference photos in a focused popup. Reply Needed lets Bradley write the exact instruction for Carl. Direct Reply helps Bradley use his own email or Quo account.
+                Needs More Info opens the attached conversation screenshots in a focused popup. Reply Needed lets Bradley write the exact instruction for Carl. Direct Reply helps Bradley use his own email or Quo account.
               </p>
             </div>
           </div>
@@ -535,7 +532,7 @@ function PhotoReviewModal({
   onClose: () => void;
   onReplyNeeded: () => void;
 }) {
-  const attachments = item.attachments ?? [];
+  const attachments = getNeedsMoreInfoScreenshots(item);
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-4" onClick={onClose}>
@@ -545,10 +542,10 @@ function PhotoReviewModal({
       >
         <div className="flex items-start justify-between gap-4 border-b border-slate-100 p-5">
           <div>
-            <p className="section-title">Needs more info reference photos</p>
+            <p className="section-title">Needs More Info screenshots</p>
             <h2 className="mt-2 text-2xl font-bold text-slate-950">{item.customer_name}</h2>
             <p className="mt-1 text-sm text-slate-500">
-              Bradley can review the attached screenshots/photos here before deciding what Carl should gather or reply.
+              Bradley can review the attached customer conversation screenshots or full-detail screenshots here before deciding what Carl should gather or reply.
             </p>
           </div>
           <button
@@ -587,9 +584,9 @@ function PhotoReviewModal({
           ) : (
             <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
               <ImageIcon className="mx-auto h-8 w-8 text-slate-400" />
-              <h3 className="mt-3 text-lg font-semibold text-slate-950">No photos attached</h3>
+              <h3 className="mt-3 text-lg font-semibold text-slate-950">No Needs More Info screenshots attached</h3>
               <p className="mt-1 text-sm text-slate-500">
-                Add screenshots or estimate photos on the escalation first so Bradley can review them here.
+                Add screenshots in the Needs More Info Screenshots field on the escalation first so Bradley can review them here.
               </p>
             </div>
           )}

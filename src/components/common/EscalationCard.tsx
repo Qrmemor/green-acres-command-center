@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { SourceBadge, StatusBadge, UrgencyBadge } from '@/components/common/Badges';
 import { AttachmentGallery } from '@/components/common/AttachmentGallery';
-import { formatDate, isDueOrOverdue, truncate } from '@/lib/utils';
+import { formatDate, truncate } from '@/lib/utils';
 import type { Escalation } from '@/types';
 
 interface EscalationCardProps {
@@ -30,7 +30,8 @@ export function EscalationCard({
   canEdit = true,
   showStatusActions = true
 }: EscalationCardProps) {
-  const highlighted = isDueOrOverdue(escalation);
+  const estimateAttachments = (escalation.attachments ?? []).filter((attachment) => (attachment.attachment_category ?? 'estimate') === 'estimate');
+  const moreInfoScreenshots = (escalation.attachments ?? []).filter((attachment) => attachment.attachment_category === 'needs_more_info');
   const [copiedNote, setCopiedNote] = useState(false);
 
   const copyBradleyNote = async () => {
@@ -47,7 +48,7 @@ export function EscalationCard({
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}>
-      <Card className={highlighted ? 'border-amber-300 bg-amber-50/40' : ''}>
+      <Card>
         <CardContent className="p-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0 flex-1">
@@ -55,11 +56,6 @@ export function EscalationCard({
                 <UrgencyBadge urgency={escalation.urgency} />
                 <SourceBadge source={escalation.source} />
                 <StatusBadge status={escalation.status} />
-                {highlighted ? (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
-                    <CalendarClock className="h-3 w-3" /> Due / Overdue
-                  </span>
-                ) : null}
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
@@ -100,7 +96,11 @@ export function EscalationCard({
                 </div>
               ) : null}
 
-              <AttachmentGallery attachments={escalation.attachments} compact={compact} />
+              <AttachmentGallery attachments={estimateAttachments} compact={compact} />
+
+              {moreInfoScreenshots.length ? (
+                <p className="mt-3 text-xs font-medium text-amber-700">{moreInfoScreenshots.length} Needs More Info screenshot{moreInfoScreenshots.length === 1 ? '' : 's'} attached for Bradley review.</p>
+              ) : null}
 
               {!compact ? (
                 <div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
@@ -111,7 +111,7 @@ export function EscalationCard({
 
               <div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-500">
                 <span className="inline-flex items-center gap-1.5">
-                  <CalendarClock className="h-3.5 w-3.5" /> Follow-up: {formatDate(escalation.follow_up_date)}
+                  <CalendarClock className="h-3.5 w-3.5" /> Escalated: {formatDate(escalation.follow_up_date)}
                 </span>
                 <span className="inline-flex items-center gap-1.5">
                   <Clock3 className="h-3.5 w-3.5" /> Last touch: {truncate(escalation.last_touch, 80)}
