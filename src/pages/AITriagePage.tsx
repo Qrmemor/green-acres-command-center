@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, Clipboard, ImagePlus, Loader2, RefreshCw, Send, Sparkles, Trash2, Upload, User, X } from 'lucide-react';
+import { Bot, Clipboard, FileText, ImagePlus, Loader2, RefreshCw, Send, Sparkles, Trash2, Upload, User, Wand2, X } from 'lucide-react';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -52,6 +52,111 @@ function createAssistantWelcome(): AIChatMessage {
     text: 'Hi Carl. Paste the customer message or screenshot here. I can help check if this needs Bradley, what info is missing, and what reply you can send based on SOP and AI Memory.',
     createdAt: new Date().toISOString()
   };
+}
+
+
+function cleanLine(value: string) {
+  return value.replace(/[*_`#>]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function truncate(value: string, max = 700) {
+  const text = cleanLine(value);
+  return text.length > max ? `${text.slice(0, max).trim()}...` : text;
+}
+
+function extractSection(text: string, labels: string[]) {
+  const lines = text.split(/\r?\n/);
+  const labelPattern = labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const startIndex = lines.findIndex((line) => new RegExp(`^\\s*(?:\\*\\*)?(${labelPattern})(?:\\*\\*)?\\s*:?`, 'i').test(line));
+  if (startIndex === -1) return '';
+
+  const collected: string[] = [];
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (/^\s*(?:\*\*)?(Recommendation|Why|Missing info|Suggested next step|Suggested customer reply|Escalation Creator|SOP triggered|Confidence)(?:\*\*)?\s*:?/i.test(line)) break;
+    if (line.trim()) collected.push(line.replace(/^\s*[-•]\s*/, ''));
+  }
+  return truncate(collected.join(' '), 650);
+}
+
+function firstMeaningfulLines(value: string, maxLines = 4) {
+  return value
+    .split(/\r?\n/)
+    .map((line) => cleanLine(line))
+    .filter(Boolean)
+    .slice(0, maxLines)
+    .join(' ');
+}
+
+function guessCustomerName(text: string) {
+  const escalationMatch = text.match(/ESCALATION\s*[—-]\s*[^—\n-]+[—-]\s*([^—\n-]+)\s*[—-]/i);
+  if (escalationMatch?.[1]) return cleanLine(escalationMatch[1]);
+
+  const customerMatch = text.match(/(?:customer|client|name)\s*[:\-]\s*([^\n,]+)/i);
+  if (customerMatch?.[1]) return cleanLine(customerMatch[1]);
+
+  const capitalizedName = text.match(/\b([A-Z][a-z]+\s+[A-Z][a-z]+)\b/);
+  return capitalizedName?.[1] ? cleanLine(capitalizedName[1]) : '[Customer Name]';
+}
+
+function guessAddress(text: string) {
+  const escalationMatch = text.match(/ESCALATION\s*[—-]\s*[^—\n-]+[—-]\s*[^—\n-]+[—-]\s*([^\n]+)/i);
+  if (escalationMatch?.[1]) return cleanLine(escalationMatch[1]);
+
+  const addressMatch = text.match(/(?:address|property)\s*[:\-]\s*([^\n]+)/i);
+  if (addressMatch?.[1]) return cleanLine(addressMatch[1]);
+
+  const streetMatch = text.match(/\b\d{2,6}\s+[A-Za-z0-9 .'-]+\s+(?:St|Street|Ave|Avenue|Rd|Road|Dr|Drive|Ct|Court|Ln|Lane|Way|Blvd|Boulevard)\b[^\n]*/i);
+  return streetMatch?.[0] ? cleanLine(streetMatch[0]) : '[Property Address]';
+}
+
+function extractInlineField(text: string, labels: string[]) {
+  for (const label of labels) {
+    const match = text.match(new RegExp(`${label}\\s*[:\\-]\\s*([^\\n]+)`, 'i'));
+    if (match?.[1]) return truncate(match[1], 450);
+  }
+  return '';
+}
+
+function shouldCreateEscalation(reply: string, userText: string) {
+  const recommendation = reply.match(/Recommendation\s*:?\s*\*?\*?([^\n]+)/i)?.[1] ?? '';
+  const stronglyNeedsBradley = /needs\s+bradley|escalate\s+to\s+bradley|owner\s+review|bradley\s+needs/i.test(recommendation);
+  const explicitEscalation = /ESCALATION\s*[—-]|create\s+an?\s+escalation|escalation\s+draft/i.test(userText);
+  const notEscalation = /carl\s+can\s+handle|need\s+more\s+info\s+first|do\s+not\s+escalate|not\s+need\s+bradley/i.test(recommendation);
+  return explicitEscalation || (stronglyNeedsBradley && !notEscalation);
+}
+
+function buildEscalationTemplateFromChat(params: {
+  source: string;
+  topic: string;
+  userText: string;
+  assistantText: string;
+}) {
+  const { source, topic, userText, assistantText } = params;
+  const combined = `${userText}\n${assistantText}`;
+  const customerName = guessCustomerName(combined);
+  const address = guessAddress(combined);
+  const sourceDetail = source === 'Gmail' ? 'team@ email' : source === 'HomeWorks' ? 'HomeWorks text/thread' : source === 'Quo' ? 'Quo thread' : source;
+
+  const situation =
+    extractInlineField(userText, ['Situation']) ||
+    extractSection(assistantText, ['Situation', 'Summary']) ||
+    truncate(firstMeaningfulLines(userText, 5), 800) ||
+    '[Short situation summary]';
+
+  const reason =
+    extractInlineField(userText, ['Reason']) ||
+    extractSection(assistantText, ['Why', 'Reason']) ||
+    'Bradley direction is needed before Carl replies or commits to the next step.';
+
+  const proposed =
+    extractInlineField(userText, ['Proposed next step', 'Next step']) ||
+    extractSection(assistantText, ['Suggested next step', 'Next step']) ||
+    'Please confirm the next step Carl should take.';
+
+  const lastTouch = extractInlineField(userText, ['Last touch']) || `[Add date/time] via ${source}`;
+
+  return `ESCALATION — ${topic || 'Other'} — ${customerName} — ${address}\n\nSource / continue here: ${sourceDetail}\n\nSituation: ${situation}\n\nLast touch: ${lastTouch}\n\nReason: ${reason}\n\nProposed next step: ${proposed}`;
 }
 
 function MessageBubble({ message, onCopy }: { message: AIChatMessage; onCopy: (value: string) => void }) {
@@ -108,6 +213,7 @@ export function AITriagePage() {
   const [contextLoading, setContextLoading] = useState(true);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
+  const [escalationDraft, setEscalationDraft] = useState('');
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -169,6 +275,26 @@ export function AITriagePage() {
     }
   };
 
+  const getLatestUserMessage = () => [...messages].reverse().find((message) => message.role === 'user');
+
+  const createEscalationDraft = (assistantText?: string, userMessage?: AIChatMessage) => {
+    const latestUserMessage = userMessage ?? getLatestUserMessage();
+    if (!latestUserMessage) {
+      setError('Send a customer message or screenshot first, then create the escalation draft.');
+      return '';
+    }
+
+    const latestAssistantText = assistantText ?? [...messages].reverse().find((message) => message.role === 'assistant')?.text ?? '';
+    const draft = buildEscalationTemplateFromChat({
+      source,
+      topic,
+      userText: latestUserMessage.text,
+      assistantText: latestAssistantText
+    });
+    setEscalationDraft(draft);
+    return draft;
+  };
+
   const send = async () => {
     const text = input.trim();
     if (!text && !pendingImages.length) {
@@ -203,6 +329,10 @@ export function AITriagePage() {
           createdAt: new Date().toISOString()
         }
       ]);
+
+      if (shouldCreateEscalation(reply, userMessage.text)) {
+        setEscalationDraft(buildEscalationTemplateFromChat({ source, topic, userText: userMessage.text, assistantText: reply }));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'AI chat failed.');
     } finally {
@@ -222,6 +352,7 @@ export function AITriagePage() {
     setPendingImages([]);
     setError('');
     setCopied('');
+    setEscalationDraft('');
   };
 
   return (
@@ -339,6 +470,43 @@ export function AITriagePage() {
                 <p className="font-semibold">Screenshot paste tip</p>
                 <p className="mt-1">Use Win + Shift + S, select the conversation, click the chat box, then press Ctrl + V.</p>
               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2"><FileText className="h-5 w-5 text-ga-700" /> Escalation Creator</CardTitle>
+              <CardDescription>If AI says this needs Bradley, this creates a clean escalation block you can copy into Add Escalation Quick Paste.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {escalationDraft ? (
+                <>
+                  <Textarea value={escalationDraft} readOnly className="min-h-[260px] text-xs leading-5" />
+                  <div className="flex flex-wrap gap-2">
+                    <Button onClick={() => copy(escalationDraft)} leftIcon={<Clipboard className="h-4 w-4" />}>
+                      Copy escalation
+                    </Button>
+                    <Button variant="secondary" onClick={() => createEscalationDraft()} leftIcon={<Wand2 className="h-4 w-4" />}>
+                      Regenerate
+                    </Button>
+                    <Button variant="ghost" onClick={() => setEscalationDraft('')}>
+                      Clear
+                    </Button>
+                  </div>
+                  <p className="text-xs leading-5 text-slate-500">
+                    Paste this into Add Escalation → Quick Paste Escalation, then fill anything missing like exact customer name, address, date, or where to continue.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                    No escalation draft yet. If the AI recommends Needs Bradley, it will appear here automatically.
+                  </div>
+                  <Button variant="secondary" onClick={() => createEscalationDraft()} leftIcon={<Wand2 className="h-4 w-4" />}>
+                    Create from latest chat
+                  </Button>
+                </>
+              )}
             </CardContent>
           </Card>
 
