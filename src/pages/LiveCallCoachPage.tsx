@@ -6,12 +6,14 @@ import {
   Loader2,
   Mic,
   MicOff,
+  MonitorUp,
   PhoneCall,
-  RefreshCw,
   Radio,
+  RefreshCw,
   ShieldAlert,
   Sparkles,
-  Trash2
+  Trash2,
+  Volume2
 } from 'lucide-react';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
@@ -23,7 +25,7 @@ import { Textarea } from '@/components/ui/Textarea';
 import { DEFAULT_TOPICS } from '@/lib/constants';
 import { listAIMemories } from '@/services/aiMemory';
 import { listEscalations } from '@/services/escalations';
-import { getLiveCallCoaching, type LiveCoachResult } from '@/services/liveCallCoach';
+import { getLiveCallCoaching, transcribeCallAudio, type LiveCoachResult } from '@/services/liveCallCoach';
 import type { AIMemory, Escalation } from '@/types';
 
 type SpeechRecognitionEventLike = Event & {
@@ -52,6 +54,7 @@ type SpeechRecognitionLike = EventTarget & {
 };
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+type ListeningMode = 'microphone' | 'tab-audio' | null;
 
 declare global {
   interface Window {
@@ -88,15 +91,20 @@ function buildCallNotes(transcript: string, coach: LiveCoachResult | null) {
   ].filter(Boolean).join('\n');
 }
 
+function canRecordTabAudio() {
+  return typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getDisplayMedia) && typeof MediaRecorder !== 'undefined';
+}
+
 export function LiveCallCoachPage() {
   const [source, setSource] = useState('Quo');
   const [topic, setTopic] = useState('Call Needed');
   const [finalTranscript, setFinalTranscript] = useState('');
   const [interimTranscript, setInterimTranscript] = useState('');
   const [manualContext, setManualContext] = useState('');
-  const [listening, setListening] = useState(false);
+  const [listeningMode, setListeningMode] = useState<ListeningMode>(null);
   const [autoCoach, setAutoCoach] = useState(true);
   const [coaching, setCoaching] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const [coach, setCoach] = useState<LiveCoachResult | null>(null);
   const [history, setHistory] = useState<Escalation[]>([]);
   const [memories, setMemories] = useState<AIMemory[]>([]);
@@ -104,8 +112,13 @@ export function LiveCallCoachPage() {
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
 
+  const listening = listeningMode !== null;
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const shouldRestartRef = useRef(false);
+  const displayStreamRef = useRef<MediaStream | null>(null);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const transcriptionQueueRef = useRef<Promise<void>>(Promise.resolve());
   const lastAnalyzedRef = useRef('');
   const transcriptBoxRef = useRef<HTMLDivElement | null>(null);
 
@@ -139,6 +152,22 @@ export function LiveCallCoachPage() {
   useEffect(() => {
     transcriptBoxRef.current?.scrollTo({ top: transcriptBoxRef.current.scrollHeight, behavior: 'smooth' });
   }, [finalTranscript, interimTranscript]);
+
+  useEffect(() => {
+    return () => {
+      shouldRestartRef.current = false;
+      recognitionRef.current?.abort();
+      mediaRecorderRef.current?.state !== 'inactive' && mediaRecorderRef.current?.stop();
+      displayStreamRef.current?.getTracks().forEach((track) => track.stop());
+      audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  const appendTranscript = (text: string) => {
+    const clean = text.trim();
+    if (!clean) return;
+    setFinalTranscript((current) => `${current}${current.trim() ? '\n' : ''}${clean}`.trimStart());
+  };
 
   const requestCoaching = async (force = false) => {
     const cleanTranscript = transcript.trim();
@@ -175,17 +204,40 @@ export function LiveCallCoachPage() {
     return () => window.clearTimeout(timer);
   }, [transcript, autoCoach, listening, contextLoading]);
 
-  const startListening = () => {
+  const stopListening = () => {
+    shouldRestartRef.current = false;
+    setListeningMode(null);
+    setInterimTranscript('');
+
+    try {
+      recognitionRef.current?.stop();
+    } catch {
+      recognitionRef.current?.abort();
+    }
+    recognitionRef.current = null;
+
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        // ignore recorder stop errors
+      }
+    }
+    mediaRecorderRef.current = null;
+
+    displayStreamRef.current?.getTracks().forEach((track) => track.stop());
+    audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    displayStreamRef.current = null;
+    audioStreamRef.current = null;
+  };
+
+  const startMicrophoneListening = () => {
+    stopListening();
     setError('');
     const SpeechRecognition = getSpeechRecognitionConstructor();
     if (!SpeechRecognition) {
-      setError('Live transcription is not supported in this browser. Use Chrome or Edge, or type/paste the call notes manually.');
+      setError('Live microphone transcription is not supported in this browser. Use Chrome or Edge, or type/paste the call notes manually.');
       return;
-    }
-
-    if (recognitionRef.current) {
-      recognitionRef.current.abort();
-      recognitionRef.current = null;
     }
 
     const recognition = new SpeechRecognition();
@@ -204,9 +256,7 @@ export function LiveCallCoachPage() {
         else interimText += text;
       }
 
-      if (finalText.trim()) {
-        setFinalTranscript((current) => `${current}${finalText}`.trimStart());
-      }
+      if (finalText.trim()) appendTranscript(finalText);
       setInterimTranscript(interimText);
     };
 
@@ -224,30 +274,98 @@ export function LiveCallCoachPage() {
           recognition.start();
         } catch {
           shouldRestartRef.current = false;
-          setListening(false);
+          setListeningMode(null);
         }
       } else {
-        setListening(false);
+        setListeningMode(null);
       }
     };
 
     recognitionRef.current = recognition;
     shouldRestartRef.current = true;
-    setListening(true);
+    setListeningMode('microphone');
 
     try {
       recognition.start();
     } catch (err) {
       shouldRestartRef.current = false;
-      setListening(false);
+      setListeningMode(null);
       setError(err instanceof Error ? err.message : 'Could not start microphone.');
     }
   };
 
-  const stopListening = () => {
-    shouldRestartRef.current = false;
-    setListening(false);
-    recognitionRef.current?.stop();
+  const enqueueTabAudioTranscription = (blob: Blob) => {
+    transcriptionQueueRef.current = transcriptionQueueRef.current.then(async () => {
+      if (!blob.size) return;
+      setTranscribing(true);
+      try {
+        const text = await transcribeCallAudio(blob);
+        appendTranscript(text);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not transcribe tab audio.');
+      } finally {
+        setTranscribing(false);
+      }
+    });
+  };
+
+  const startTabAudioListening = async () => {
+    stopListening();
+    setError('');
+
+    if (!canRecordTabAudio()) {
+      setError('Tab audio capture is not supported in this browser. Use Chrome or Edge.');
+      return;
+    }
+
+    try {
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true
+      });
+
+      const audioTracks = displayStream.getAudioTracks();
+      if (!audioTracks.length) {
+        displayStream.getTracks().forEach((track) => track.stop());
+        setError('No tab audio was shared. Click Capture Tab Audio again, choose the Quo/OpenPhone tab, and make sure Share tab audio is checked.');
+        return;
+      }
+
+      const audioStream = new MediaStream(audioTracks);
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+      const recorder = new MediaRecorder(audioStream, { mimeType });
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 1200) enqueueTabAudioTranscription(event.data);
+      };
+
+      recorder.onerror = () => {
+        setError('Tab audio recorder failed. Try starting Capture Tab Audio again.');
+      };
+
+      audioTracks.forEach((track) => {
+        track.onended = () => stopListening();
+      });
+      displayStream.getVideoTracks().forEach((track) => {
+        track.onended = () => stopListening();
+      });
+
+      displayStreamRef.current = displayStream;
+      audioStreamRef.current = audioStream;
+      mediaRecorderRef.current = recorder;
+      setListeningMode('tab-audio');
+
+      recorder.start(7000);
+      setCopied('Tab audio capture started. Keep the selected call tab open while talking.');
+      window.setTimeout(() => setCopied(''), 2200);
+    } catch (err) {
+      setListeningMode(null);
+      if (err instanceof DOMException && err.name === 'NotAllowedError') {
+        setError('Tab audio capture was cancelled or blocked. Try again and select the Quo/OpenPhone tab.');
+      } else {
+        setError(err instanceof Error ? err.message : 'Could not start tab audio capture.');
+      }
+    }
   };
 
   const clearCall = () => {
@@ -274,7 +392,7 @@ export function LiveCallCoachPage() {
           <p className="page-kicker">AI COMMAND CENTER</p>
           <h1 className="page-title">Live Call Coach</h1>
           <p className="page-subtitle">
-            Let the system listen through your microphone, transcribe the call, and show SOP-based text guidance you can read while talking.
+            Use microphone mode for speaker calls, or tab audio mode when your Quo/OpenPhone call is in the browser and you are wearing headphones.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
@@ -286,10 +404,10 @@ export function LiveCallCoachPage() {
       {error ? <Alert className="mb-5 text-red-700">{error}</Alert> : null}
       {copied ? <div className="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{copied}</div> : null}
 
-      <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-        <p className="font-semibold">Important call note</p>
+      <div className="mb-5 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+        <p className="font-semibold">Headphones setup</p>
         <p className="mt-1">
-          This listens only through your browser microphone. If the customer audio is inside OpenPhone/Quo and you use headphones, the system may only hear you. Use speaker mode or type/paste key details if needed.
+          If you are wearing headphones, use <span className="font-semibold">Capture Tab Audio</span>. Select the Quo/OpenPhone browser tab and check <span className="font-semibold">Share tab audio</span>. This lets the system hear the customer audio from that tab.
         </p>
       </div>
 
@@ -300,13 +418,18 @@ export function LiveCallCoachPage() {
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
                   <CardTitle className="flex items-center gap-2"><PhoneCall className="h-5 w-5 text-ga-700" /> Call controls</CardTitle>
-                  <CardDescription>Start listening when the call begins. The AI will coach from the live transcript.</CardDescription>
+                  <CardDescription>Choose the audio source, then the AI will coach from the transcript.</CardDescription>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {listening ? (
-                    <Button variant="danger" onClick={stopListening} leftIcon={<MicOff className="h-4 w-4" />}>Stop Listening</Button>
+                    <Button variant="danger" onClick={stopListening} leftIcon={<MicOff className="h-4 w-4" />}>
+                      Stop {listeningMode === 'tab-audio' ? 'Tab Audio' : 'Mic'}
+                    </Button>
                   ) : (
-                    <Button onClick={startListening} leftIcon={<Mic className="h-4 w-4" />}>Start Listening</Button>
+                    <>
+                      <Button onClick={startMicrophoneListening} leftIcon={<Mic className="h-4 w-4" />}>Use Microphone</Button>
+                      <Button variant="secondary" onClick={startTabAudioListening} leftIcon={<MonitorUp className="h-4 w-4" />}>Capture Tab Audio</Button>
+                    </>
                   )}
                   <Button variant={autoCoach ? 'warning' : 'secondary'} onClick={() => setAutoCoach((current) => !current)} leftIcon={<Radio className="h-4 w-4" />}>
                     {autoCoach ? 'Auto Coach On' : 'Auto Coach Off'}
@@ -317,14 +440,27 @@ export function LiveCallCoachPage() {
                 </div>
               </div>
             </CardHeader>
-            <CardContent className="grid gap-4 md:grid-cols-2">
-              <div>
-                <Label htmlFor="live-source">Source</Label>
-                <Select id="live-source" value={source} onChange={(event) => setSource(event.target.value)} options={['Quo', 'HomeWorks', 'Gmail', 'Other']} />
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <Label htmlFor="live-source">Source</Label>
+                  <Select id="live-source" value={source} onChange={(event) => setSource(event.target.value)} options={['Quo', 'HomeWorks', 'Gmail', 'Other']} />
+                </div>
+                <div>
+                  <Label htmlFor="live-topic">Topic</Label>
+                  <Select id="live-topic" value={topic} onChange={(event) => setTopic(event.target.value)} options={DEFAULT_TOPICS} />
+                </div>
               </div>
-              <div>
-                <Label htmlFor="live-topic">Topic</Label>
-                <Select id="live-topic" value={topic} onChange={(event) => setTopic(event.target.value)} options={DEFAULT_TOPICS} />
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className={`rounded-2xl border p-4 text-sm ${listeningMode === 'microphone' ? 'border-ga-300 bg-ga-50 text-ga-900' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+                  <div className="mb-1 flex items-center gap-2 font-semibold"><Mic className="h-4 w-4" /> Microphone Mode</div>
+                  <p>Use this if the customer is on speaker or your mic can hear both sides.</p>
+                </div>
+                <div className={`rounded-2xl border p-4 text-sm ${listeningMode === 'tab-audio' ? 'border-blue-300 bg-blue-50 text-blue-900' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+                  <div className="mb-1 flex items-center gap-2 font-semibold"><Volume2 className="h-4 w-4" /> Tab Audio Mode</div>
+                  <p>Use this for Quo/OpenPhone browser calls while wearing headphones.</p>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -359,6 +495,7 @@ export function LiveCallCoachPage() {
               <div ref={transcriptBoxRef} className="min-h-[320px] max-h-[420px] overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-800">
                 {finalTranscript ? <span className="whitespace-pre-wrap">{finalTranscript}</span> : <span className="text-slate-400">Transcript will appear here after you start listening.</span>}
                 {interimTranscript ? <span className="whitespace-pre-wrap text-slate-500"> {interimTranscript}</span> : null}
+                {transcribing ? <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-blue-600">Transcribing tab audio...</p> : null}
               </div>
             </CardContent>
           </Card>
@@ -431,7 +568,7 @@ export function LiveCallCoachPage() {
                 </>
               ) : (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
-                  Start listening, then click <span className="font-semibold text-slate-900">Coach Now</span>. If Auto Coach is on, suggestions will refresh as the transcript grows.
+                  Start microphone or capture tab audio, then click <span className="font-semibold text-slate-900">Coach Now</span>. If Auto Coach is on, suggestions will refresh as the transcript grows.
                 </div>
               )}
             </CardContent>
@@ -439,12 +576,13 @@ export function LiveCallCoachPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2"><RefreshCw className="h-5 w-5 text-ga-700" /> Best use</CardTitle>
+              <CardTitle className="flex items-center gap-2"><RefreshCw className="h-5 w-5 text-ga-700" /> How to use with headphones</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 text-sm text-slate-600">
-              <p>Use it when a live call is unclear, the customer asks for Bradley, pricing feels risky, or you need the next safe SOP question.</p>
+              <p>Open the Quo/OpenPhone call in a browser tab.</p>
+              <p>Click <span className="font-semibold text-slate-900">Capture Tab Audio</span>, choose that call tab, and check <span className="font-semibold text-slate-900">Share tab audio</span>.</p>
+              <p>Keep using your headphones. The system reads the tab audio and shows text coaching.</p>
               <p>For simple calls, turn Auto Coach off and only click Coach Now when needed to save tokens.</p>
-              <p>It only advises Carl. It does not speak to the customer or send messages.</p>
             </CardContent>
           </Card>
         </aside>

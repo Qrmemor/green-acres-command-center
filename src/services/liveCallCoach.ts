@@ -160,3 +160,22 @@ export async function getLiveCallCoaching(payload: LiveCoachPayload): Promise<Li
     return localFallbackCoach(payload, error instanceof Error ? error.message : 'OpenAI is unavailable.');
   }
 }
+
+
+interface TranscribeApiResponse {
+  ok: boolean;
+  text?: string;
+  error?: string;
+}
+
+export async function transcribeCallAudio(blob: Blob): Promise<string> {
+  const response = await fetch('/api/live-call-transcribe', {
+    method: 'POST',
+    headers: { 'Content-Type': blob.type || 'audio/webm' },
+    body: blob
+  });
+
+  const data = (await response.json()) as TranscribeApiResponse;
+  if (!data.ok) throw new Error(data.error || 'Audio transcription failed.');
+  return (data.text || '').trim();
+}
