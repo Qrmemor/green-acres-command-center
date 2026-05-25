@@ -564,7 +564,7 @@ function ReviewDetailModal({
 
           <div className="mt-5 space-y-2">
             <div className="grid gap-2 sm:grid-cols-3">
-              {BRADLEY_PRIMARY_ACTIONS.map((action) => (
+              {BRADLEY_PRIMARY_ACTIONS.slice(0, 3).map((action) => (
                 <Button
                   key={action.label}
                   variant="secondary"
@@ -579,17 +579,28 @@ function ReviewDetailModal({
             </div>
 
             <div className="grid gap-2 sm:grid-cols-3">
-              <div className="hidden sm:block" />
+              {BRADLEY_PRIMARY_ACTIONS.slice(3).map((action) => (
+                <Button
+                  key={action.label}
+                  variant="secondary"
+                  size="sm"
+                  className="justify-center"
+                  leftIcon={actionIcons[action.label]}
+                  onClick={() => onAction(item, action.label, action.status, action.ownerNextAction, action.note)}
+                >
+                  {action.label}
+                </Button>
+              ))}
+
               <Button
                 variant="primary"
                 size="sm"
-                className="w-full justify-center"
+                className="justify-center"
                 leftIcon={actionIcons[BRADLEY_RESOLVE_ACTION.label]}
                 onClick={() => onAction(item, BRADLEY_RESOLVE_ACTION.label, BRADLEY_RESOLVE_ACTION.status, BRADLEY_RESOLVE_ACTION.ownerNextAction, BRADLEY_RESOLVE_ACTION.note)}
               >
                 {BRADLEY_RESOLVE_ACTION.label}
               </Button>
-              <div className="hidden sm:block" />
             </div>
           </div>
         </div>
