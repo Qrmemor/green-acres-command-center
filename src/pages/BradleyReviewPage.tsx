@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronLeft, ChevronRight, Copy, ExternalLink, Image as ImageIcon, Info, Mail, Reply, Search, ShieldAlert, X } from 'lucide-react';
-import { BRADLEY_ACTIONS } from '@/lib/constants';
+import { Check, ChevronLeft, ChevronRight, Copy, ExternalLink, Image as ImageIcon, Info, Mail, Phone, Reply, Search, ShieldAlert, UserCheck, X } from 'lucide-react';
 import { formatDate, sortEscalations, truncate } from '@/lib/utils';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
@@ -14,10 +13,57 @@ import type { Escalation, OwnerNextAction } from '@/types';
 
 const actionIcons: Record<string, JSX.Element> = {
   'Direct Reply': <ExternalLink className="h-4 w-4" />,
+  'Send instruction to Carl': <Reply className="h-4 w-4" />,
   'Reply Needed': <Reply className="h-4 w-4" />,
-  'Okay Carl, Work This': <Check className="h-4 w-4" />,
   'Needs More Info': <ImageIcon className="h-4 w-4" />,
+  'Copy Phone': <Phone className="h-4 w-4" />,
+  'I’ll Handle This': <UserCheck className="h-4 w-4" />,
   Resolved: <ShieldAlert className="h-4 w-4" />
+};
+
+const BRADLEY_PRIMARY_ACTIONS: Array<{
+  label: string;
+  status: string;
+  ownerNextAction: OwnerNextAction;
+  note: string;
+}> = [
+  {
+    label: 'Direct Reply',
+    status: 'Waiting on Bradley',
+    ownerNextAction: 'Bradley',
+    note: 'Bradley opened the direct reply helper.'
+  },
+  {
+    label: 'Send instruction to Carl',
+    status: 'Ready for Carl',
+    ownerNextAction: 'Carl',
+    note: 'Bradley is writing an instruction for Carl.'
+  },
+  {
+    label: 'Needs More Info',
+    status: 'Follow-Up Needed',
+    ownerNextAction: 'Carl',
+    note: 'Bradley opened the Needs More Info screenshots.'
+  },
+  {
+    label: 'Copy Phone',
+    status: 'Waiting on Bradley',
+    ownerNextAction: 'Bradley',
+    note: 'Bradley copied the customer phone number.'
+  },
+  {
+    label: 'I’ll Handle This',
+    status: 'Waiting on Bradley',
+    ownerNextAction: 'Bradley',
+    note: 'Bradley marked that he will handle this item directly.'
+  }
+];
+
+const BRADLEY_RESOLVE_ACTION = {
+  label: 'Resolved',
+  status: 'Resolved',
+  ownerNextAction: 'Customer' as OwnerNextAction,
+  note: 'Bradley marked this item resolved.'
 };
 
 type HandoffMode = 'reply' | 'moreInfo';
@@ -190,8 +236,20 @@ export function BradleyReviewPage() {
       return;
     }
 
-    if (label === 'Reply Needed') {
+    if (label === 'Reply Needed' || label === 'Send instruction to Carl') {
       startHandoff(item, 'reply');
+      return;
+    }
+
+    if (label === 'Copy Phone') {
+      const phoneNumber = getPhoneNumber(item);
+      if (!phoneNumber) {
+        setError('No customer phone number is saved on this escalation yet.');
+        return;
+      }
+
+      const copied = await copyToClipboard(phoneNumber);
+      setSuccess(copied ? `Phone number copied: ${phoneNumber}` : 'Unable to copy phone number.');
       return;
     }
 
@@ -239,6 +297,8 @@ export function BradleyReviewPage() {
         setSuccess('Saved as Bradley Replied.');
       } else if (label === 'Okay Carl, Work This') {
         setSuccess('Moved to Carl Work Queue.');
+      } else if (label === 'I’ll Handle This') {
+        setSuccess('Saved. This item is marked as waiting on Bradley because Bradley will handle it directly.');
       }
 
       await load();
@@ -290,9 +350,9 @@ export function BradleyReviewPage() {
   const urgent = reviewItems.filter((item) => item.urgency === 'Urgent / Customer-Sensitive');
   const standard = reviewItems.filter((item) => item.urgency === 'Standard / Non-Urgent');
 
-  const handoffTitle = handoffMode === 'moreInfo' ? 'More info request for Carl' : 'Reply note for Carl';
+  const handoffTitle = handoffMode === 'moreInfo' ? 'More info request for Carl' : 'Instruction for Carl';
   const handoffDescription = handoffMode === 'moreInfo'
-    ? 'Bradley can type what information Carl needs to gather. It will only move to Carl Work Queue after clicking Okay Carl, Work This.'
+    ? 'Bradley can type what information Carl needs to gather. It will move to Carl Work Queue only after Bradley sends the note.'
     : 'Bradley can type the exact instruction or suggested reply. When saved, it moves to Carl Work Queue.';
 
   return (
@@ -319,7 +379,7 @@ export function BradleyReviewPage() {
           onClose={() => setSelectedReviewItem(null)}
           onAction={async (item, label, status, ownerNextAction, note) => {
             await action(item, label, status, ownerNextAction, note);
-            if (label === 'Resolved' || label === 'Okay Carl, Work This' || label === 'I Replied') {
+            if (label === 'Resolved' || label === 'Okay Carl, Work This' || label === 'I Replied' || label === 'I’ll Handle This') {
               setSelectedReviewItem(null);
             }
           }}
@@ -376,7 +436,7 @@ export function BradleyReviewPage() {
               <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
                 <Button variant="secondary" onClick={() => setHandoffItem(null)} disabled={savingHandoff}>Cancel</Button>
                 <Button onClick={saveHandoffForCarl} disabled={savingHandoff} leftIcon={<Check className="h-4 w-4" />}>
-                  {savingHandoff ? 'Saving...' : 'Okay Carl, Work This'}
+                  {savingHandoff ? 'Saving...' : 'Send to Carl'}
                 </Button>
               </div>
             </CardContent>
@@ -497,14 +557,14 @@ function ReviewDetailModal({
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
               <p className="font-semibold uppercase tracking-wide text-slate-500">Review helper</p>
               <p className="mt-1">
-                Needs More Info opens the attached conversation screenshots in a focused popup. Reply Needed lets Bradley write the exact instruction for Carl. Direct Reply helps Bradley use his own email or Quo account.
+                Needs More Info opens the attached conversation screenshots. Send instruction to Carl lets Bradley write the exact reply or next step. Copy Phone is available for call follow-up, and I’ll Handle This keeps the ball with Bradley.
               </p>
             </div>
           </div>
 
           <div className="mt-5 space-y-2">
             <div className="grid gap-2 sm:grid-cols-3">
-              {BRADLEY_ACTIONS.filter((action) => action.label !== 'Okay Carl, Work This' && action.label !== 'Resolved').map((action) => (
+              {BRADLEY_PRIMARY_ACTIONS.map((action) => (
                 <Button
                   key={action.label}
                   variant="secondary"
@@ -520,18 +580,15 @@ function ReviewDetailModal({
 
             <div className="grid gap-2 sm:grid-cols-3">
               <div className="hidden sm:block" />
-              {BRADLEY_ACTIONS.filter((action) => action.label === 'Resolved').map((action) => (
-                <Button
-                  key={action.label}
-                  variant="primary"
-                  size="sm"
-                  className="w-full justify-center"
-                  leftIcon={actionIcons[action.label]}
-                  onClick={() => onAction(item, action.label, action.status, action.ownerNextAction, action.note)}
-                >
-                  {action.label}
-                </Button>
-              ))}
+              <Button
+                variant="primary"
+                size="sm"
+                className="w-full justify-center"
+                leftIcon={actionIcons[BRADLEY_RESOLVE_ACTION.label]}
+                onClick={() => onAction(item, BRADLEY_RESOLVE_ACTION.label, BRADLEY_RESOLVE_ACTION.status, BRADLEY_RESOLVE_ACTION.ownerNextAction, BRADLEY_RESOLVE_ACTION.note)}
+              >
+                {BRADLEY_RESOLVE_ACTION.label}
+              </Button>
               <div className="hidden sm:block" />
             </div>
           </div>
@@ -794,7 +851,7 @@ function DirectReplyModal({
           </div>
 
           <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-            If Bradley does not see the customer in his Quo account after searching the phone number, then that customer thread is only available in Carl/team access. In that case, Bradley should use Reply Needed and hand the reply back to Carl.
+            If Bradley does not see the customer in his Quo account after searching the phone number, then that customer thread is only available in Carl/team access. In that case, Bradley should use Send instruction to Carl and hand the reply back to Carl.
           </div>
 
           <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">

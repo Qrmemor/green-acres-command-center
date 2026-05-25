@@ -38,6 +38,43 @@ function getNeedsMoreInfoScreenshots(item: Escalation) {
   return (item.attachments ?? []).filter((attachment) => attachment.attachment_category === 'needs_more_info');
 }
 
+function isDueTodayOrOverdue(date?: string | null) {
+  if (!date) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const target = new Date(`${date}T00:00:00`);
+  return target.getTime() <= today.getTime();
+}
+
+function needsOwnerPriority(item: Escalation) {
+  const searchText = [item.topic, item.situation, item.reason_for_escalation, item.proposed_next_step, item.last_touch]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  const sensitiveSignals = [
+    'call',
+    'complaint',
+    'angry',
+    'upset',
+    'refund',
+    'damage',
+    'no-show',
+    'no show',
+    'safety',
+    'pricing',
+    'payment',
+    'commercial',
+    'hoa'
+  ];
+
+  return (
+    item.urgency === 'Urgent / Customer-Sensitive' ||
+    isDueTodayOrOverdue(item.follow_up_date) ||
+    sensitiveSignals.some((signal) => searchText.includes(signal))
+  );
+}
+
 export function DashboardPage() {
   const [items, setItems] = useState<Escalation[]>([]);
   const [options, setOptions] = useState<WorkspaceOptions>(fallbackOptions);
@@ -73,6 +110,7 @@ export function DashboardPage() {
   const carlWorkQueue = visible.filter((item) => item.owner_next_action === 'Carl' && ['Ready for Carl', 'Approved', 'Follow-Up Needed'].includes(item.status));
   const waitingBradley = visible.filter((item) => item.status === 'Needs Bradley' || item.status === 'Waiting on Bradley');
   const openLoops = visible.filter((item) => item.status === 'Follow-Up Needed' || item.owner_next_action !== 'Bradley');
+  const bradleyPriorityToday = visible.filter((item) => needsOwnerPriority(item));
 
   const handleStatusChange = async (id: string, status: string) => {
     const previous = items;
@@ -144,61 +182,83 @@ export function DashboardPage() {
 
           <FilterBar filters={filters} onChange={(next) => setFilters({ ...next, resolved: false })} sources={options.sources} topics={options.topics} statuses={options.statuses} />
 
-          {!isBradley && carlWorkQueue.length ? (
-            <div className="rounded-2xl border border-ga-100 bg-ga-50 p-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white text-ga-700">
-                    <UserCheck className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <p className="font-semibold text-ga-950">
-                      Carl has {carlWorkQueue.length} item{carlWorkQueue.length === 1 ? '' : 's'} ready to work.
-                    </p>
-                    <p className="text-sm text-ga-800">Open Carl Review to copy Bradley notes, open the reply thread, and mark replies done.</p>
+          {isBradley ? (
+            <>
+              <BradleyOwnerSummary items={visible} priorityItems={bradleyPriorityToday} resolvedToday={stats.resolvedToday} />
+              <DashboardSection
+                title="My Priority Today"
+                description="Urgent, due, or customer-sensitive items Bradley should review first."
+                items={bradleyPriorityToday}
+                onOpenItem={setSelectedItem}
+              />
+              <DashboardSection
+                title="Urgent / Customer-Sensitive"
+                description="Highest priority customer-sensitive decisions."
+                items={urgent}
+                onOpenItem={setSelectedItem}
+              />
+              <DashboardSection
+                title="Standard / Non-Urgent"
+                description="Still needs owner direction, but not customer-sensitive."
+                items={standard}
+                onOpenItem={setSelectedItem}
+              />
+            </>
+          ) : (
+            <>
+              {carlWorkQueue.length ? (
+                <div className="rounded-2xl border border-ga-100 bg-ga-50 p-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white text-ga-700">
+                        <UserCheck className="h-5 w-5" />
+                      </div>
+                      <div>
+                        <p className="font-semibold text-ga-950">
+                          Carl has {carlWorkQueue.length} item{carlWorkQueue.length === 1 ? '' : 's'} ready to work.
+                        </p>
+                        <p className="text-sm text-ga-800">Open Carl Review to copy Bradley notes, open the reply thread, and mark replies done.</p>
+                      </div>
+                    </div>
+                    <Link to="/carl-review">
+                      <Button variant="secondary">Open Carl Review</Button>
+                    </Link>
                   </div>
                 </div>
-                <Link to="/carl-review">
-                  <Button variant="secondary">Open Carl Review</Button>
-                </Link>
-              </div>
-            </div>
-          ) : null}
+              ) : null}
 
-          {!isBradley ? (
-            <DashboardSection
-              title="Carl Work Queue"
-              description="Items Bradley has approved or handed back to Carl with instructions."
-              items={carlWorkQueue}
-              onOpenItem={setSelectedItem}
-            />
-          ) : null}
-          <DashboardSection
-            title="Urgent / Customer-Sensitive"
-            description="Highest priority items Bradley should see first."
-            items={urgent}
-            onOpenItem={setSelectedItem}
-          />
-          <DashboardSection
-            title="Standard / Non-Urgent"
-            description="Still important, but not customer-sensitive."
-            items={standard}
-            onOpenItem={setSelectedItem}
-          />
-          <DashboardSection
-            title="Waiting on Bradley"
-            description="The ball is currently on Bradley’s side."
-            items={waitingBradley}
-            onOpenItem={setSelectedItem}
-          />
-          {!isBradley ? (
-            <DashboardSection
-              title="Open Loops"
-              description="Items Carl should keep tracking until closed."
-              items={openLoops}
-              onOpenItem={setSelectedItem}
-            />
-          ) : null}
+              <DashboardSection
+                title="Carl Work Queue"
+                description="Items Bradley has approved or handed back to Carl with instructions."
+                items={carlWorkQueue}
+                onOpenItem={setSelectedItem}
+              />
+              <DashboardSection
+                title="Urgent / Customer-Sensitive"
+                description="Highest priority items Bradley should see first."
+                items={urgent}
+                onOpenItem={setSelectedItem}
+              />
+              <DashboardSection
+                title="Standard / Non-Urgent"
+                description="Still important, but not customer-sensitive."
+                items={standard}
+                onOpenItem={setSelectedItem}
+              />
+              <DashboardSection
+                title="Waiting on Bradley"
+                description="The ball is currently on Bradley’s side."
+                items={waitingBradley}
+                onOpenItem={setSelectedItem}
+              />
+              <DashboardSection
+                title="Open Loops"
+                description="Items Carl should keep tracking until closed."
+                items={openLoops}
+                onOpenItem={setSelectedItem}
+              />
+            </>
+          )}
         </>
       )}
 
@@ -210,6 +270,48 @@ export function DashboardPage() {
           onStatusChange={handleStatusChange}
         />
       ) : null}
+    </div>
+  );
+}
+
+
+function BradleyOwnerSummary({
+  items,
+  priorityItems,
+  resolvedToday
+}: {
+  items: Escalation[];
+  priorityItems: Escalation[];
+  resolvedToday: number;
+}) {
+  const dueNow = items.filter((item) => isDueTodayOrOverdue(item.follow_up_date)).length;
+  const waiting = items.filter((item) => item.status === 'Needs Bradley' || item.status === 'Waiting on Bradley').length;
+
+  return (
+    <div className="rounded-3xl border border-ga-100 bg-ga-50 p-5 shadow-soft">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <p className="section-title text-ga-800">Owner focus</p>
+          <h2 className="mt-2 text-xl font-bold text-ga-950">Today Bradley needs to decide on {waiting} open item{waiting === 1 ? '' : 's'}.</h2>
+          <p className="mt-1 max-w-2xl text-sm text-ga-800">
+            Start with My Priority Today, then move to standard items only if there is time.
+          </p>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[420px]">
+          <div className="rounded-2xl bg-white p-4 text-center">
+            <p className="text-2xl font-bold text-ga-950">{priorityItems.length}</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Priority today</p>
+          </div>
+          <div className="rounded-2xl bg-white p-4 text-center">
+            <p className="text-2xl font-bold text-ga-950">{dueNow}</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Due / overdue</p>
+          </div>
+          <div className="rounded-2xl bg-white p-4 text-center">
+            <p className="text-2xl font-bold text-ga-950">{resolvedToday}</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Resolved today</p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -274,7 +376,12 @@ function DashboardPreviewCard({ item, onClick }: { item: Escalation; onClick: ()
         {item.address ? <p className="mt-1 break-words text-sm text-slate-500 [overflow-wrap:anywhere]">{item.address}</p> : null}
       </div>
 
-      <p className="mt-3 text-sm leading-6 text-slate-600">{truncate(item.situation, 150)}</p>
+      <div className="mt-3 rounded-2xl bg-slate-50 p-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Decision needed</p>
+        <p className="mt-1 text-sm font-medium leading-6 text-slate-950">{truncate(item.proposed_next_step, 145)}</p>
+      </div>
+
+      <p className="mt-3 text-sm leading-6 text-slate-600">{truncate(item.situation, 120)}</p>
 
       <div className="mt-4 flex flex-wrap gap-2 text-xs font-semibold">
         {estimateCount ? <span className="rounded-full bg-ga-50 px-2.5 py-1 text-ga-700">{estimateCount} photo{estimateCount === 1 ? '' : 's'}</span> : null}
