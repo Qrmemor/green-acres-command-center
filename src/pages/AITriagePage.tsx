@@ -1,90 +1,332 @@
-import { useState } from 'react';
-import { Brain, Clipboard, Sparkles } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Bot, Clipboard, ImagePlus, Loader2, RefreshCw, Send, Sparkles, Trash2, Upload, User, X } from 'lucide-react';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Label } from '@/components/ui/Label';
 import { Select } from '@/components/ui/Select';
 import { Textarea } from '@/components/ui/Textarea';
-import { type AITriageAnalysis } from '@/services/aiTriage';
-import { analyzeEscalationDraftWithOpenAI } from '@/services/openaiTriage';
+import { DEFAULT_TOPICS } from '@/lib/constants';
 import { listAIMemories } from '@/services/aiMemory';
 import { listEscalations } from '@/services/escalations';
-import { DEFAULT_TOPICS } from '@/lib/constants';
+import { sendAIChatMessage, type AIChatImage, type AIChatMessage } from '@/services/openaiChat';
+import type { AIMemory, Escalation } from '@/types';
 
-function parseFreeTextToDraft(raw: string, source: string, topic: string) {
-  const email = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ?? '';
-  const phone = raw.match(/(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}/)?.[0] ?? '';
-  const firstLine = raw.split(/\r?\n/).find((line) => line.trim())?.trim() ?? '';
-  const customerNameMatch = firstLine.match(/(?:from|customer|name)[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})/);
+const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 
+function makeId() {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function fileToChatImage(file: File): Promise<AIChatImage> {
+  return new Promise((resolve, reject) => {
+    if (!file.type.startsWith('image/')) {
+      reject(new Error(`${file.name} is not an image.`));
+      return;
+    }
+
+    if (file.size > MAX_IMAGE_SIZE) {
+      reject(new Error(`${file.name} is too large. Max image size is 10 MB.`));
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      resolve({
+        id: makeId(),
+        name: file.name || `pasted-screenshot-${Date.now()}.png`,
+        type: file.type || 'image/png',
+        dataUrl: String(reader.result)
+      });
+    };
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}.`));
+    reader.readAsDataURL(file);
+  });
+}
+
+function createAssistantWelcome(): AIChatMessage {
   return {
-    customer_name: customerNameMatch?.[1] ?? '',
-    phone,
-    email,
-    source,
-    topic,
-    situation: raw.trim(),
-    last_touch: raw.trim() ? 'Review pasted customer context.' : '',
-    reason_for_escalation: '',
-    proposed_next_step: '',
-    where_to_continue: source === 'Gmail' ? 'team@ Gmail thread' : source === 'Quo' ? 'Quo thread' : source
+    id: makeId(),
+    role: 'assistant',
+    text: 'Hi Carl. Paste the customer message or screenshot here. I can help check if this needs Bradley, what info is missing, and what reply you can send based on SOP and AI Memory.',
+    createdAt: new Date().toISOString()
   };
+}
+
+function MessageBubble({ message, onCopy }: { message: AIChatMessage; onCopy: (value: string) => void }) {
+  const isUser = message.role === 'user';
+
+  return (
+    <div className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
+      {!isUser ? (
+        <div className="mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-700">
+          <Bot className="h-5 w-5" />
+        </div>
+      ) : null}
+
+      <div className={`max-w-[86%] rounded-3xl border px-4 py-3 shadow-sm ${isUser ? 'border-ga-100 bg-ga-700 text-white' : 'border-slate-200 bg-white text-slate-800'}`}>
+        {message.images?.length ? (
+          <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {message.images.map((image) => (
+              <a key={image.id} href={image.dataUrl} target="_blank" rel="noreferrer" className="group overflow-hidden rounded-2xl border border-white/40 bg-white/20">
+                <img src={image.dataUrl} alt={image.name} className="h-24 w-full object-cover transition group-hover:scale-[1.02]" />
+              </a>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="whitespace-pre-wrap text-sm leading-6">{message.text}</div>
+
+        {!isUser ? (
+          <div className="mt-3 flex justify-end">
+            <Button size="sm" variant="secondary" onClick={() => onCopy(message.text)} leftIcon={<Clipboard className="h-3.5 w-3.5" />}>
+              Copy
+            </Button>
+          </div>
+        ) : null}
+      </div>
+
+      {isUser ? (
+        <div className="mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-ga-50 text-ga-700">
+          <User className="h-5 w-5" />
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export function AITriagePage() {
   const [source, setSource] = useState('Quo');
   const [topic, setTopic] = useState('Other');
+  const [messages, setMessages] = useState<AIChatMessage[]>([createAssistantWelcome()]);
   const [input, setInput] = useState('');
-  const [analysis, setAnalysis] = useState<AITriageAnalysis | null>(null);
+  const [pendingImages, setPendingImages] = useState<AIChatImage[]>([]);
+  const [history, setHistory] = useState<Escalation[]>([]);
+  const [memories, setMemories] = useState<AIMemory[]>([]);
   const [loading, setLoading] = useState(false);
+  const [contextLoading, setContextLoading] = useState(true);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const analyze = async () => {
-    if (!input.trim()) {
-      setError('Paste the customer message or escalation context first.');
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadContext() {
+      setContextLoading(true);
+      try {
+        const [nextHistory, nextMemories] = await Promise.all([listEscalations(), listAIMemories({ activeOnly: true })]);
+        if (!mounted) return;
+        setHistory(nextHistory);
+        setMemories(nextMemories);
+      } catch (err) {
+        if (mounted) setError(err instanceof Error ? err.message : 'Unable to load AI context.');
+      } finally {
+        if (mounted) setContextLoading(false);
+      }
+    }
+
+    loadContext();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, loading]);
+
+  const activeMemoryCount = useMemo(() => memories.filter((memory) => memory.is_active).length, [memories]);
+
+  const addFiles = async (files: File[]) => {
+    setError('');
+    const images: AIChatImage[] = [];
+    for (const file of files) {
+      try {
+        images.push(await fileToChatImage(file));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not attach an image.');
+      }
+    }
+    if (images.length) setPendingImages((current) => [...current, ...images].slice(0, 8));
+  };
+
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    await addFiles(Array.from(event.target.files ?? []));
+    event.target.value = '';
+  };
+
+  const handlePaste = async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const imageFiles = Array.from(event.clipboardData.items)
+      .filter((item) => item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+
+    if (imageFiles.length) {
+      await addFiles(imageFiles);
+    }
+  };
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text && !pendingImages.length) {
+      setError('Type a message or paste a screenshot first.');
       return;
     }
 
-    setLoading(true);
+    const userMessage: AIChatMessage = {
+      id: makeId(),
+      role: 'user',
+      text: text || 'Please review the attached screenshot(s).',
+      images: pendingImages,
+      createdAt: new Date().toISOString()
+    };
+
+    const nextMessages = [...messages, userMessage];
+    setMessages(nextMessages);
+    setInput('');
+    setPendingImages([]);
     setError('');
     setCopied('');
+    setLoading(true);
+
     try {
-      const [history, memories] = await Promise.all([listEscalations(), listAIMemories({ activeOnly: true })]);
-      const draft = parseFreeTextToDraft(input, source, topic);
-      setAnalysis(await analyzeEscalationDraftWithOpenAI(draft, history, memories));
+      const reply = await sendAIChatMessage({ messages: nextMessages, source, topic, history, memories });
+      setMessages((current) => [
+        ...current,
+        {
+          id: makeId(),
+          role: 'assistant',
+          text: reply,
+          createdAt: new Date().toISOString()
+        }
+      ]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'AI triage failed.');
+      setError(err instanceof Error ? err.message : 'AI chat failed.');
     } finally {
       setLoading(false);
     }
   };
 
-  const copy = async (value: string, label: string) => {
+  const copy = async (value: string) => {
     await navigator.clipboard.writeText(value);
-    setCopied(`${label} copied.`);
+    setCopied('Copied.');
+    window.setTimeout(() => setCopied(''), 1800);
+  };
+
+  const clearChat = () => {
+    setMessages([createAssistantWelcome()]);
+    setInput('');
+    setPendingImages([]);
+    setError('');
+    setCopied('');
   };
 
   return (
     <div className="page-shell max-w-6xl">
-      <div className="mb-6">
-        <p className="page-kicker">AI COMMAND CENTER</p>
-        <h1 className="page-title">AI Triage Assistant</h1>
-        <p className="page-subtitle">Paste a customer message or internal note before escalating. The assistant checks SOP triggers, missing info, and similar past Bradley decisions.</p>
+      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="page-kicker">AI COMMAND CENTER</p>
+          <h1 className="page-title">AI Chat Assistant</h1>
+          <p className="page-subtitle">
+            Chat with your Green Acres AI. Paste customer messages, internal notes, or screenshots, then ask if Carl can handle it or if Bradley needs to decide.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
+          <span className="rounded-full bg-ga-50 px-3 py-1 font-medium text-ga-800">{activeMemoryCount} memories loaded</span>
+          <span className="rounded-full bg-blue-50 px-3 py-1 font-medium text-blue-700">{history.length} cases available</span>
+        </div>
       </div>
 
       {error ? <Alert className="mb-5 text-red-700">{error}</Alert> : null}
       {copied ? <div className="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{copied}</div> : null}
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_0.95fr]">
-        <Card>
-          <CardHeader>
-            <CardTitle>Before you escalate</CardTitle>
-            <CardDescription>Use this as a quick decision check. It does not send anything to customers or Bradley.</CardDescription>
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
+        <Card className="overflow-hidden">
+          <CardHeader className="border-b border-slate-100">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <Sparkles className="h-5 w-5 text-ga-700" /> Chat before you escalate
+                </CardTitle>
+                <CardDescription>It does not send anything to customers or Bradley. It only gives recommendations.</CardDescription>
+              </div>
+              <Button variant="secondary" onClick={clearChat} leftIcon={<RefreshCw className="h-4 w-4" />}>
+                New chat
+              </Button>
+            </div>
           </CardHeader>
-          <CardContent>
-            <div className="grid gap-4 sm:grid-cols-2">
+
+          <CardContent className="p-0">
+            <div className="h-[560px] space-y-5 overflow-y-auto bg-slate-50/70 px-4 py-5 sm:px-6">
+              {messages.map((message) => <MessageBubble key={message.id} message={message} onCopy={copy} />)}
+              {loading ? (
+                <div className="flex gap-3">
+                  <div className="mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-700">
+                    <Bot className="h-5 w-5" />
+                  </div>
+                  <div className="rounded-3xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
+                    <span className="inline-flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Thinking...</span>
+                  </div>
+                </div>
+              ) : null}
+              <div ref={chatEndRef} />
+            </div>
+
+            <div className="border-t border-slate-100 bg-white p-4">
+              {pendingImages.length ? (
+                <div className="mb-3 grid gap-2 sm:grid-cols-4">
+                  {pendingImages.map((image) => (
+                    <div key={image.id} className="relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+                      <img src={image.dataUrl} alt={image.name} className="h-24 w-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => setPendingImages((current) => current.filter((item) => item.id !== image.id))}
+                        className="absolute right-2 top-2 rounded-full bg-white/90 p-1 text-slate-600 shadow-sm hover:text-red-600"
+                        aria-label="Remove image"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              <Textarea
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                onPaste={handlePaste}
+                className="min-h-[120px]"
+                placeholder="Type your question, paste the customer message, or press Ctrl + V after taking a screenshot with Win + Shift + S."
+              />
+
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap gap-2">
+                  <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleFileChange} />
+                  <Button variant="secondary" onClick={() => fileInputRef.current?.click()} leftIcon={<ImagePlus className="h-4 w-4" />}>
+                    Attach image
+                  </Button>
+                  <Button variant="ghost" onClick={() => setPendingImages([])} leftIcon={<Trash2 className="h-4 w-4" />} disabled={!pendingImages.length}>
+                    Clear images
+                  </Button>
+                </div>
+                <Button onClick={send} disabled={loading || contextLoading} leftIcon={<Send className="h-4 w-4" />}>
+                  {loading ? 'Sending...' : 'Send to AI'}
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <div className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Context</CardTitle>
+              <CardDescription>Choose the source/topic so the AI gives better SOP guidance.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
               <div>
                 <Label htmlFor="ai-source">Source</Label>
                 <Select id="ai-source" value={source} onChange={(event) => setSource(event.target.value)} options={['Quo', 'HomeWorks', 'Gmail', 'Other']} />
@@ -93,122 +335,29 @@ export function AITriagePage() {
                 <Label htmlFor="ai-topic">Topic</Label>
                 <Select id="ai-topic" value={topic} onChange={(event) => setTopic(event.target.value)} options={DEFAULT_TOPICS} />
               </div>
-            </div>
-            <div className="mt-4">
-              <Label htmlFor="ai-input">Customer message / internal context</Label>
-              <Textarea
-                id="ai-input"
-                className="min-h-[330px]"
-                value={input}
-                onChange={(event) => setInput(event.target.value)}
-                placeholder="Paste the customer message, Quo text, Gmail reply, HomeWorks note, or draft escalation here."
-              />
-            </div>
-            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end">
-              <Button variant="secondary" onClick={() => { setInput(''); setAnalysis(null); }}>Clear</Button>
-              <Button onClick={analyze} disabled={loading} leftIcon={<Sparkles className="h-4 w-4" />}>
-                {loading ? 'Analyzing...' : 'Analyze with OpenAI'}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Brain className="h-5 w-5 text-blue-700" /> AI Result</CardTitle>
-            <CardDescription>Keep Bradley out of items Carl can safely handle.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {!analysis ? (
-              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-sm text-slate-500">
-                Paste context and click Analyze with OpenAI. If OpenAI is not configured, the local SOP triage will still run as fallback.
+              <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-900">
+                <p className="font-semibold">Screenshot paste tip</p>
+                <p className="mt-1">Use Win + Shift + S, select the conversation, click the chat box, then press Ctrl + V.</p>
               </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">Recommendation</p>
-                  <p className="mt-1 text-2xl font-bold text-slate-950">{analysis.decision}</p>
-                  <p className="mt-1 text-sm text-slate-600">Confidence: {analysis.confidence}{(analysis as any).engine ? ` · Engine: ${(analysis as any).engine}` : ''}</p>
-                  {(analysis as any).openAIError ? <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">OpenAI fallback: {(analysis as any).openAIError}</p> : null}
-                </div>
+            </CardContent>
+          </Card>
 
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Reason</p>
-                  <ul className="mt-2 space-y-1 text-sm text-slate-700">
-                    {analysis.reasons.map((reason) => <li key={reason}>• {reason}</li>)}
-                  </ul>
-                </div>
-
-                {analysis.sopTriggers.length ? (
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">SOP triggered</p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {analysis.sopTriggers.map((trigger) => <span key={trigger} className="rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-700">{trigger}</span>)}
-                    </div>
-                  </div>
-                ) : null}
-
-                {analysis.missingInfo.length ? (
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Missing info</p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {analysis.missingInfo.map((item) => <span key={item} className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">{item}</span>)}
-                    </div>
-                  </div>
-                ) : null}
-
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Suggested next step</p>
-                  <p className="mt-2 text-sm text-slate-700">{analysis.suggestedNextStep}</p>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Suggested reply</p>
-                    <Button size="sm" variant="secondary" onClick={() => copy(analysis.suggestedReply, 'Suggested reply')} leftIcon={<Clipboard className="h-3.5 w-3.5" />}>Copy</Button>
-                  </div>
-                  <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">{analysis.suggestedReply}</p>
-                </div>
-
-                {analysis.memoryMatches.length ? (
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">AI memory matches</p>
-                    <div className="mt-2 space-y-2">
-                      {analysis.memoryMatches.map((item) => (
-                        <div key={item.id} className="rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-sm">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-semibold text-slate-900">{item.title}</span>
-                            <span className="rounded-full bg-white px-2 py-0.5 text-xs text-emerald-700">{item.memory_type.replace(/_/g, ' ')}</span>
-                            <span className="text-xs text-emerald-700">{item.score}% match</span>
-                          </div>
-                          <p className="mt-1 whitespace-pre-wrap text-xs text-slate-600">{item.summary}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-
-                {analysis.similarCases.length ? (
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Similar cases</p>
-                    <div className="mt-2 space-y-2">
-                      {analysis.similarCases.map((item) => (
-                        <div key={item.id} className="rounded-xl border border-slate-200 bg-white p-3 text-sm">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-semibold text-slate-900">{item.customer_name}</span>
-                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{item.topic}</span>
-                            <span className="text-xs text-slate-500">{item.score}% match</span>
-                          </div>
-                          <p className="mt-1 text-xs text-slate-500">{item.learned_from}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2"><Upload className="h-5 w-5 text-ga-700" /> What to paste</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm text-slate-600">
+              <p>Paste customer messages, Quo screenshots, Gmail replies, HomeWorks notes, or your draft escalation.</p>
+              <p>Ask things like:</p>
+              <ul className="list-disc space-y-1 pl-5">
+                <li>Does this need Bradley?</li>
+                <li>What info is missing?</li>
+                <li>Can Carl reply using SOP?</li>
+                <li>Draft a safe customer reply.</li>
+              </ul>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );
