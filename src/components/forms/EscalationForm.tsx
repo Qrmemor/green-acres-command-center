@@ -383,7 +383,7 @@ export function EscalationForm({
       if (!String(values[key] ?? '').trim()) return message;
     }
 
-    if (requiresFollowUp && !values.follow_up_date) return 'Escalation date is required unless item is Resolved, Closed, or Not a Fit.';
+    if (requiresFollowUp && !values.follow_up_date) return 'Due / follow-up date is required unless item is Resolved, Closed, or Not a Fit.';
     return '';
   };
 
@@ -653,9 +653,9 @@ export function EscalationForm({
             />
           </div>
           <div>
-            <Label htmlFor="follow_up_date">Escalation Date {requiresFollowUp ? '*' : ''}</Label>
+            <Label htmlFor="follow_up_date">Due / Follow-Up Date {requiresFollowUp ? '*' : ''}</Label>
             <Input id="follow_up_date" type="date" value={values.follow_up_date ?? ''} onChange={(event) => setField('follow_up_date', event.target.value)} />
-            <p className="field-helper">Use the date you escalated this item to Bradley.</p>
+            <p className="field-helper">Use the date Carl needs to check, follow up, or keep the item from sitting in the middle.</p>
           </div>
         </div>
 
