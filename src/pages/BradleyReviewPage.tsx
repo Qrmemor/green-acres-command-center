@@ -503,7 +503,7 @@ function ReviewDetailModal({
           </div>
 
           <div className="mt-5 space-y-2">
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid gap-2 sm:grid-cols-3">
               {BRADLEY_ACTIONS.filter((action) => action.label !== 'Okay Carl, Work This' && action.label !== 'Resolved').map((action) => (
                 <Button
                   key={action.label}
@@ -518,18 +518,22 @@ function ReviewDetailModal({
               ))}
             </div>
 
-            {BRADLEY_ACTIONS.filter((action) => action.label === 'Resolved').map((action) => (
-              <Button
-                key={action.label}
-                variant="primary"
-                size="sm"
-                className="mx-auto w-full justify-center sm:max-w-sm"
-                leftIcon={actionIcons[action.label]}
-                onClick={() => onAction(item, action.label, action.status, action.ownerNextAction, action.note)}
-              >
-                {action.label}
-              </Button>
-            ))}
+            <div className="grid gap-2 sm:grid-cols-3">
+              <div className="hidden sm:block" />
+              {BRADLEY_ACTIONS.filter((action) => action.label === 'Resolved').map((action) => (
+                <Button
+                  key={action.label}
+                  variant="primary"
+                  size="sm"
+                  className="w-full justify-center"
+                  leftIcon={actionIcons[action.label]}
+                  onClick={() => onAction(item, action.label, action.status, action.ownerNextAction, action.note)}
+                >
+                  {action.label}
+                </Button>
+              ))}
+              <div className="hidden sm:block" />
+            </div>
           </div>
         </div>
       </div>
