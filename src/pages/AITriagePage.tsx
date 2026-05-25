@@ -6,7 +6,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Label } from '@/components/ui/Label';
 import { Select } from '@/components/ui/Select';
 import { Textarea } from '@/components/ui/Textarea';
-import { analyzeEscalationDraft, type AITriageAnalysis } from '@/services/aiTriage';
+import { type AITriageAnalysis } from '@/services/aiTriage';
+import { analyzeEscalationDraftWithOpenAI } from '@/services/openaiTriage';
 import { listAIMemories } from '@/services/aiMemory';
 import { listEscalations } from '@/services/escalations';
 import { DEFAULT_TOPICS } from '@/lib/constants';
@@ -52,7 +53,7 @@ export function AITriagePage() {
     try {
       const [history, memories] = await Promise.all([listEscalations(), listAIMemories({ activeOnly: true })]);
       const draft = parseFreeTextToDraft(input, source, topic);
-      setAnalysis(analyzeEscalationDraft(draft, history, memories));
+      setAnalysis(await analyzeEscalationDraftWithOpenAI(draft, history, memories));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'AI triage failed.');
     } finally {
@@ -106,7 +107,7 @@ export function AITriagePage() {
             <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end">
               <Button variant="secondary" onClick={() => { setInput(''); setAnalysis(null); }}>Clear</Button>
               <Button onClick={analyze} disabled={loading} leftIcon={<Sparkles className="h-4 w-4" />}>
-                {loading ? 'Analyzing...' : 'Analyze with AI'}
+                {loading ? 'Analyzing...' : 'Analyze with OpenAI'}
               </Button>
             </div>
           </CardContent>
@@ -120,14 +121,15 @@ export function AITriagePage() {
           <CardContent>
             {!analysis ? (
               <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-sm text-slate-500">
-                Paste context and click Analyze with AI.
+                Paste context and click Analyze with OpenAI. If OpenAI is not configured, the local SOP triage will still run as fallback.
               </div>
             ) : (
               <div className="space-y-4">
                 <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
                   <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">Recommendation</p>
                   <p className="mt-1 text-2xl font-bold text-slate-950">{analysis.decision}</p>
-                  <p className="mt-1 text-sm text-slate-600">Confidence: {analysis.confidence}</p>
+                  <p className="mt-1 text-sm text-slate-600">Confidence: {analysis.confidence}{(analysis as any).engine ? ` · Engine: ${(analysis as any).engine}` : ''}</p>
+                  {(analysis as any).openAIError ? <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">OpenAI fallback: {(analysis as any).openAIError}</p> : null}
                 </div>
 
                 <div>

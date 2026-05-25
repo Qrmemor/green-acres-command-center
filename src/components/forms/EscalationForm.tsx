@@ -10,7 +10,8 @@ import { Select } from '@/components/ui/Select';
 import { Textarea } from '@/components/ui/Textarea';
 import { ESCALATION_TRIGGERS, OWNER_NEXT_ACTION_OPTIONS, RESOLVED_STATUSES, URGENCY_OPTIONS } from '@/lib/constants';
 import { cn, toInputDate } from '@/lib/utils';
-import { analyzeEscalationDraft, type AITriageAnalysis } from '@/services/aiTriage';
+import { type AITriageAnalysis } from '@/services/aiTriage';
+import { analyzeEscalationDraftWithOpenAI } from '@/services/openaiTriage';
 import { listAIMemories } from '@/services/aiMemory';
 import { listEscalations } from '@/services/escalations';
 import type { Escalation, EscalationPayload } from '@/types';
@@ -267,7 +268,7 @@ export function EscalationForm({
     setError('');
     try {
       const [history, memories] = await Promise.all([listEscalations(), listAIMemories({ activeOnly: true })]);
-      const analysis = analyzeEscalationDraft(
+      const analysis = await analyzeEscalationDraftWithOpenAI(
         {
           ...values,
           hasEstimatePhotos: estimatePhotoFiles.length > 0 || Boolean(initialEscalation?.attachments?.some((item) => item.attachment_category === 'estimate')),
@@ -485,12 +486,12 @@ export function EscalationForm({
               <div>
                 <p className="text-sm font-semibold text-slate-900">AI Triage Assistant</p>
                 <p className="text-xs text-slate-600">
-                  Checks this draft against Green Acres SOP triggers and past Bradley decisions. It suggests whether Carl can handle it, more info is needed first, or Bradley should review it.
+                  Uses OpenAI plus saved AI memories, SOP triggers, and past Bradley decisions. If OpenAI is not configured, it falls back to the local SOP triage.
                 </p>
               </div>
             </div>
             <Button type="button" variant="secondary" onClick={runAITriage} disabled={aiLoading} leftIcon={<Sparkles className="h-4 w-4" />}>
-              {aiLoading ? 'Analyzing...' : 'Analyze with AI'}
+              {aiLoading ? 'Analyzing...' : 'Analyze with OpenAI'}
             </Button>
           </div>
 
@@ -500,7 +501,8 @@ export function EscalationForm({
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">AI recommendation</p>
                   <p className="mt-1 text-lg font-bold text-slate-950">{aiAnalysis.decision}</p>
-                  <p className="text-sm text-slate-600">Confidence: {aiAnalysis.confidence}</p>
+                  <p className="text-sm text-slate-600">Confidence: {aiAnalysis.confidence}{(aiAnalysis as any).engine ? ` · Engine: ${(aiAnalysis as any).engine}` : ''}</p>
+                  {(aiAnalysis as any).openAIError ? <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">OpenAI fallback: {(aiAnalysis as any).openAIError}</p> : null}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">{aiAnalysis.recommendedStatus}</span>
