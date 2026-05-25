@@ -11,6 +11,7 @@ import { BradleyReviewPage } from '@/pages/BradleyReviewPage';
 import { CarlReviewPage } from '@/pages/CarlReviewPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { EscalationDetailPage } from '@/pages/EscalationDetailPage';
+import { LiveCallCoachPage } from '@/pages/LiveCallCoachPage';
 import { LoginPage } from '@/pages/LoginPage';
 import { ReportGeneratorPage } from '@/pages/ReportGeneratorPage';
 import { ResolvedEscalationsPage } from '@/pages/ResolvedEscalationsPage';
@@ -59,6 +60,7 @@ export default function App() {
           <Route path="/add" element={<ProtectedLayout allowedRoles={CARL_ADMIN_ONLY}><AddEscalationPage /></ProtectedLayout>} />
           <Route path="/ai-triage" element={<ProtectedLayout allowedRoles={CARL_ADMIN_ONLY}><AITriagePage /></ProtectedLayout>} />
           <Route path="/ai-memory" element={<ProtectedLayout allowedRoles={CARL_ADMIN_ONLY}><AIMemoryPage /></ProtectedLayout>} />
+          <Route path="/live-call-coach" element={<ProtectedLayout allowedRoles={CARL_ADMIN_ONLY}><LiveCallCoachPage /></ProtectedLayout>} />
           <Route path="/escalations/:id" element={<ProtectedLayout allowedRoles={CARL_ADMIN_ONLY}><EscalationDetailPage /></ProtectedLayout>} />
           <Route path="/bradley-review" element={<ProtectedLayout allowedRoles={BRADLEY_ALLOWED}><BradleyReviewPage /></ProtectedLayout>} />
           <Route path="/carl-review" element={<ProtectedLayout allowedRoles={CARL_ADMIN_ONLY}><CarlReviewPage /></ProtectedLayout>} />
