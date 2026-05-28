@@ -55,6 +55,7 @@ type SpeechRecognitionLike = EventTarget & {
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 type ListeningMode = 'microphone' | 'tab-audio' | null;
+type AudioHealth = 'idle' | 'hearing' | 'quiet' | 'no-audio';
 
 declare global {
   interface Window {
@@ -111,6 +112,9 @@ export function LiveCallCoachPage() {
   const [contextLoading, setContextLoading] = useState(true);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [audioHealth, setAudioHealth] = useState<AudioHealth>('idle');
+  const [audioHelp, setAudioHelp] = useState('Capture a Quo/OpenPhone tab and check Share tab audio.');
 
   const listening = listeningMode !== null;
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
@@ -121,6 +125,91 @@ export function LiveCallCoachPage() {
   const transcriptionQueueRef = useRef<Promise<void>>(Promise.resolve());
   const lastAnalyzedRef = useRef('');
   const transcriptBoxRef = useRef<HTMLDivElement | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioMeterFrameRef = useRef<number | null>(null);
+  const quietFrameCountRef = useRef(0);
+
+  const stopAudioMeter = () => {
+    if (audioMeterFrameRef.current !== null) {
+      cancelAnimationFrame(audioMeterFrameRef.current);
+      audioMeterFrameRef.current = null;
+    }
+
+    if (audioContextRef.current) {
+      void audioContextRef.current.close().catch(() => undefined);
+      audioContextRef.current = null;
+    }
+
+    quietFrameCountRef.current = 0;
+    setAudioLevel(0);
+    setAudioHealth('idle');
+    setAudioHelp('Capture a Quo/OpenPhone tab and check Share tab audio.');
+  };
+
+  const startAudioMeter = (stream: MediaStream, mode: ListeningMode) => {
+    stopAudioMeter();
+
+    try {
+      const AudioContextConstructor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+
+      if (!AudioContextConstructor) {
+        setAudioHealth('no-audio');
+        setAudioHelp('Audio meter is not supported in this browser. Use Chrome or Edge.');
+        return;
+      }
+
+      const audioContext = new AudioContextConstructor();
+      const sourceNode = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 1024;
+      sourceNode.connect(analyser);
+
+      const data = new Uint8Array(analyser.fftSize);
+      audioContextRef.current = audioContext;
+      quietFrameCountRef.current = 0;
+
+      const tick = () => {
+        analyser.getByteTimeDomainData(data);
+
+        let sum = 0;
+        for (let index = 0; index < data.length; index += 1) {
+          const centered = data[index] - 128;
+          sum += centered * centered;
+        }
+
+        const rms = Math.sqrt(sum / data.length);
+        const normalized = Math.min(100, Math.round((rms / 42) * 100));
+        setAudioLevel(normalized);
+
+        if (normalized >= 6) {
+          quietFrameCountRef.current = 0;
+          setAudioHealth('hearing');
+          setAudioHelp(mode === 'tab-audio'
+            ? 'Hearing audio from the selected tab. Keep the Quo/OpenPhone tab open while on the call.'
+            : 'Hearing microphone audio.');
+        } else {
+          quietFrameCountRef.current += 1;
+          if (quietFrameCountRef.current > 90) {
+            setAudioHealth('quiet');
+            setAudioHelp(mode === 'tab-audio'
+              ? 'No clear tab audio detected yet. Make sure you selected the Quo/OpenPhone tab, not this app tab, and checked Share tab audio.'
+              : 'No clear microphone audio detected yet. Check microphone permissions and input volume.');
+          } else {
+            setAudioHealth('idle');
+            setAudioHelp('Waiting for audio. Speak or play sound in the selected call tab.');
+          }
+        }
+
+        audioMeterFrameRef.current = requestAnimationFrame(tick);
+      };
+
+      tick();
+    } catch {
+      setAudioHealth('no-audio');
+      setAudioHelp('Could not start the audio meter. Try Chrome or Edge and capture the call tab again.');
+    }
+  };
+
 
   const transcript = useMemo(() => {
     return [manualContext.trim(), finalTranscript.trim(), interimTranscript.trim() ? `[listening] ${interimTranscript.trim()}` : '']
@@ -160,6 +249,7 @@ export function LiveCallCoachPage() {
       mediaRecorderRef.current?.state !== 'inactive' && mediaRecorderRef.current?.stop();
       displayStreamRef.current?.getTracks().forEach((track) => track.stop());
       audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+      stopAudioMeter();
     };
   }, []);
 
@@ -229,6 +319,7 @@ export function LiveCallCoachPage() {
     audioStreamRef.current?.getTracks().forEach((track) => track.stop());
     displayStreamRef.current = null;
     audioStreamRef.current = null;
+    stopAudioMeter();
   };
 
   const startMicrophoneListening = () => {
@@ -332,6 +423,7 @@ export function LiveCallCoachPage() {
       }
 
       const audioStream = new MediaStream(audioTracks);
+      startAudioMeter(audioStream, 'tab-audio');
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
       const recorder = new MediaRecorder(audioStream, { mimeType });
 
@@ -410,6 +502,52 @@ export function LiveCallCoachPage() {
           If you are wearing headphones, use <span className="font-semibold">Capture Tab Audio</span>. Select the Quo/OpenPhone browser tab and check <span className="font-semibold">Share tab audio</span>. This lets the system hear the customer audio from that tab.
         </p>
       </div>
+
+      <Card className="mb-5 border-amber-200">
+        <CardContent className="p-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-slate-950">Audio Debug / Quo Test</p>
+              <p className="mt-1 text-sm text-slate-600">{audioHelp}</p>
+            </div>
+            <div className="min-w-[260px]">
+              <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <span>{listeningMode === 'tab-audio' ? 'Tab audio level' : listeningMode === 'microphone' ? 'Mic level' : 'Audio level'}</span>
+                <span className={
+                  audioHealth === 'hearing'
+                    ? 'text-emerald-700'
+                    : audioHealth === 'quiet' || audioHealth === 'no-audio'
+                      ? 'text-red-700'
+                      : 'text-slate-500'
+                }>
+                  {audioHealth === 'hearing'
+                    ? 'Hearing audio'
+                    : audioHealth === 'quiet'
+                      ? 'No clear audio'
+                      : audioHealth === 'no-audio'
+                        ? 'Audio meter unavailable'
+                        : 'Waiting'}
+                </span>
+              </div>
+              <div className="h-3 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className={`h-full rounded-full transition-all duration-150 ${
+                    audioHealth === 'hearing'
+                      ? 'bg-emerald-500'
+                      : audioHealth === 'quiet' || audioHealth === 'no-audio'
+                        ? 'bg-red-400'
+                        : 'bg-amber-400'
+                  }`}
+                  style={{ width: `${Math.max(4, audioLevel)}%` }}
+                />
+              </div>
+              <p className="mt-2 text-xs text-slate-500">
+                Quick test: play audio in the Quo/OpenPhone tab. If this bar does not move, the system is not receiving that tab audio yet.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
         <div className="space-y-6">
@@ -579,9 +717,10 @@ export function LiveCallCoachPage() {
               <CardTitle className="flex items-center gap-2"><RefreshCw className="h-5 w-5 text-ga-700" /> How to use with headphones</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 text-sm text-slate-600">
-              <p>Open the Quo/OpenPhone call in a browser tab.</p>
-              <p>Click <span className="font-semibold text-slate-900">Capture Tab Audio</span>, choose that call tab, and check <span className="font-semibold text-slate-900">Share tab audio</span>.</p>
-              <p>Keep using your headphones. The system reads the tab audio and shows text coaching.</p>
+              <p>Open the Quo/OpenPhone call in a Chrome or Edge browser tab.</p>
+              <p>Click <span className="font-semibold text-slate-900">Capture Tab Audio</span>, choose the Quo/OpenPhone tab, not the Green Acres tab, and check <span className="font-semibold text-slate-900">Share tab audio</span>.</p>
+              <p>Watch the Audio Debug meter. If it says <span className="font-semibold text-slate-900">Hearing audio</span>, the system is receiving sound from the call tab.</p>
+              <p>If the meter does not move, stop capture and try again. Make sure the selected tab is not muted and that audio is actually playing in that tab.</p>
               <p>For simple calls, turn Auto Coach off and only click Coach Now when needed to save tokens.</p>
             </CardContent>
           </Card>
