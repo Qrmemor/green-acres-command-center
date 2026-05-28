@@ -128,6 +128,8 @@ export function LiveCallCoachPage() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioMeterFrameRef = useRef<number | null>(null);
   const quietFrameCountRef = useRef(0);
+  const latestAudioLevelRef = useRef(0);
+  const latestAudioHealthRef = useRef<AudioHealth>('idle');
 
   const stopAudioMeter = () => {
     if (audioMeterFrameRef.current !== null) {
@@ -141,6 +143,8 @@ export function LiveCallCoachPage() {
     }
 
     quietFrameCountRef.current = 0;
+    latestAudioLevelRef.current = 0;
+    latestAudioHealthRef.current = 'idle';
     setAudioLevel(0);
     setAudioHealth('idle');
     setAudioHelp('Capture a Quo/OpenPhone tab and check Share tab audio.');
@@ -179,10 +183,12 @@ export function LiveCallCoachPage() {
 
         const rms = Math.sqrt(sum / data.length);
         const normalized = Math.min(100, Math.round((rms / 42) * 100));
+        latestAudioLevelRef.current = normalized;
         setAudioLevel(normalized);
 
         if (normalized >= 6) {
           quietFrameCountRef.current = 0;
+          latestAudioHealthRef.current = 'hearing';
           setAudioHealth('hearing');
           setAudioHelp(mode === 'tab-audio'
             ? 'Hearing audio from the selected tab. Keep the Quo/OpenPhone tab open while on the call.'
@@ -190,11 +196,13 @@ export function LiveCallCoachPage() {
         } else {
           quietFrameCountRef.current += 1;
           if (quietFrameCountRef.current > 90) {
+            latestAudioHealthRef.current = 'quiet';
             setAudioHealth('quiet');
             setAudioHelp(mode === 'tab-audio'
               ? 'No clear tab audio detected yet. Make sure you selected the Quo/OpenPhone tab, not this app tab, and checked Share tab audio.'
               : 'No clear microphone audio detected yet. Check microphone permissions and input volume.');
           } else {
+            latestAudioHealthRef.current = 'idle';
             setAudioHealth('idle');
             setAudioHelp('Waiting for audio. Speak or play sound in the selected call tab.');
           }
@@ -205,6 +213,7 @@ export function LiveCallCoachPage() {
 
       tick();
     } catch {
+      latestAudioHealthRef.current = 'no-audio';
       setAudioHealth('no-audio');
       setAudioHelp('Could not start the audio meter. Try Chrome or Edge and capture the call tab again.');
     }
@@ -428,7 +437,15 @@ export function LiveCallCoachPage() {
       const recorder = new MediaRecorder(audioStream, { mimeType });
 
       recorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 1200) enqueueTabAudioTranscription(event.data);
+        if (!event.data || event.data.size < 5000) return;
+
+        if (latestAudioHealthRef.current !== 'hearing' && latestAudioLevelRef.current < 6) {
+          setTranscribing(false);
+          setAudioHelp('Audio chunk skipped because no clear call audio was detected. Confirm Share tab audio is checked and the selected Quo/OpenPhone tab is playing sound.');
+          return;
+        }
+
+        enqueueTabAudioTranscription(event.data);
       };
 
       recorder.onerror = () => {
@@ -447,7 +464,7 @@ export function LiveCallCoachPage() {
       mediaRecorderRef.current = recorder;
       setListeningMode('tab-audio');
 
-      recorder.start(7000);
+      recorder.start(15000);
       setCopied('Tab audio capture started. Keep the selected call tab open while talking.');
       window.setTimeout(() => setCopied(''), 2200);
     } catch (err) {

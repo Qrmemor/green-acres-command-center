@@ -176,6 +176,6 @@ export async function transcribeCallAudio(blob: Blob): Promise<string> {
   });
 
   const data = (await response.json()) as TranscribeApiResponse;
-  if (!data.ok) throw new Error(data.error || 'Audio transcription failed.');
+  if (!data.ok) throw new Error(data.error || 'Audio transcription failed. If this keeps happening, the selected tab is not sending usable audio.');
   return (data.text || '').trim();
 }
