@@ -76,6 +76,87 @@ function decisionTone(decision?: string): 'green' | 'red' | 'amber' | 'blue' | '
   return 'slate';
 }
 
+type InstantSuggestion = {
+  say: string;
+  ask: string;
+  warning: string;
+  decision: LiveCoachResult['decision'];
+};
+
+function getInstantSuggestion(transcript: string): InstantSuggestion {
+  const text = transcript.toLowerCase();
+
+  if (!transcript.trim()) {
+    return {
+      decision: 'Need more info first',
+      say: 'Hi, this is Carl with Green Acres. I can help gather the details first so we can review the best next step.',
+      ask: 'Can I get your name, property address, service needed, and a quick description of what is going on?',
+      warning: 'Do not promise pricing, timing, or a Bradley call until details are reviewed.'
+    };
+  }
+
+  if (/(call me|call back|phone call|speak with bradley|talk to bradley|can bradley call|have bradley call)/i.test(text)) {
+    return {
+      decision: 'Needs Bradley',
+      say: 'I understand. I’ll document what happened and flag this for Bradley to review before we confirm the next step.',
+      ask: 'What is the best phone number and what is the main thing you want Bradley to review?',
+      warning: 'Do not promise Bradley will call at a specific time unless Bradley already confirmed.'
+    };
+  }
+
+  if (/(angry|upset|frustrated|not happy|complaint|unacceptable|did not finish|not finished|no show|crew did not|wrong|damage|broken)/i.test(text)) {
+    return {
+      decision: 'Needs Bradley',
+      say: 'I’m sorry about that. I’ll make a clear note of what happened and get this reviewed internally so we handle it correctly.',
+      ask: 'Can you tell me exactly what happened and, if possible, send a photo or short video of the area?',
+      warning: 'Customer-sensitive issue. Do not blame the crew or promise a fix before Bradley reviews.'
+    };
+  }
+
+  if (/(price|pricing|quote|estimate|how much|cost|charge|invoice|payment|pay|card|refund|discount|credit)/i.test(text)) {
+    return {
+      decision: 'Needs Bradley',
+      say: 'I can help collect the details first so we can review the right pricing or payment next step before confirming anything.',
+      ask: 'Can you confirm the property address, scope, and send photos or a short video if this is for an estimate?',
+      warning: 'Do not quote pricing or send payment links when pricing/invoice status is unclear.'
+    };
+  }
+
+  if (/(cleanup|clean up|mulch|weeding|weed|trimming|bush|plant|bed|landscape|project)/i.test(text)) {
+    return {
+      decision: 'Carl can handle',
+      say: 'For cleanup or project work, I can gather the details and photos first. Our project schedule is currently booked out, so I’ll make sure we set the right expectation.',
+      ask: 'Can you send photos or video of the area, your property address, and your ideal timing?',
+      warning: 'Use the fully-booked project-work SOP if this is cleanup/mulch/weeding/bed work. Do not promise an immediate visit.'
+    };
+  }
+
+  if (/(mow|mowing|lawn|grass|turf|fertilizer|treatment)/i.test(text)) {
+    return {
+      decision: 'Need more info first',
+      say: 'I can help gather the lawn details and check the best next step internally.',
+      ask: 'Can you confirm the property address, lawn concern, and whether you are asking about mowing or the turf program?',
+      warning: 'Mowing/turf can be different from cleanup project scheduling. Do not apply the cleanup fully-booked message automatically.'
+    };
+  }
+
+  if (/(hoa|commercial|business|apartment|condo|multiple locations|property manager)/i.test(text)) {
+    return {
+      decision: 'Needs Bradley',
+      say: 'Thanks for explaining. I’ll collect the details and flag this for Bradley because commercial or HOA-type requests need owner review.',
+      ask: 'Can you send the property addresses, scope, frequency, and the best contact information?',
+      warning: 'Commercial/HOA leads should be escalated.'
+    };
+  }
+
+  return {
+    decision: 'Need more info first',
+    say: 'Got it. I’ll gather the details first so we can decide the correct next step without overpromising.',
+    ask: 'Can you confirm the property address, photos or video if relevant, timeline, and the best contact information?',
+    warning: 'If you are not 100% sure, collect details and escalate instead of promising.'
+  };
+}
+
 function buildCallNotes(transcript: string, coach: LiveCoachResult | null) {
   return [
     'LIVE CALL NOTES',
@@ -130,6 +211,7 @@ export function LiveCallCoachPage() {
   const quietFrameCountRef = useRef(0);
   const latestAudioLevelRef = useRef(0);
   const latestAudioHealthRef = useRef<AudioHealth>('idle');
+  const transcribeErrorCountRef = useRef(0);
 
   const stopAudioMeter = () => {
     if (audioMeterFrameRef.current !== null) {
@@ -143,6 +225,7 @@ export function LiveCallCoachPage() {
     }
 
     quietFrameCountRef.current = 0;
+    transcribeErrorCountRef.current = 0;
     latestAudioLevelRef.current = 0;
     latestAudioHealthRef.current = 'idle';
     setAudioLevel(0);
@@ -226,6 +309,8 @@ export function LiveCallCoachPage() {
       .join('\n');
   }, [manualContext, finalTranscript, interimTranscript]);
 
+  const instantSuggestion = useMemo(() => getInstantSuggestion(transcript), [transcript]);
+
   useEffect(() => {
     let mounted = true;
     async function loadContext() {
@@ -294,13 +379,23 @@ export function LiveCallCoachPage() {
 
   useEffect(() => {
     if (!autoCoach || !listening || contextLoading) return;
-    if (transcript.trim().length < 80) return;
+    if (transcript.trim().length < 25) return;
 
     const timer = window.setTimeout(() => {
       void requestCoaching(false);
-    }, 3500);
+    }, 1500);
 
     return () => window.clearTimeout(timer);
+  }, [transcript, autoCoach, listening, contextLoading]);
+
+  useEffect(() => {
+    if (!autoCoach || !listening || contextLoading) return;
+
+    const interval = window.setInterval(() => {
+      if (transcript.trim().length >= 25) void requestCoaching(false);
+    }, 12000);
+
+    return () => window.clearInterval(interval);
   }, [transcript, autoCoach, listening, contextLoading]);
 
   const stopListening = () => {
@@ -400,9 +495,36 @@ export function LiveCallCoachPage() {
       setTranscribing(true);
       try {
         const text = await transcribeCallAudio(blob);
-        appendTranscript(text);
+        transcribeErrorCountRef.current = 0;
+
+        if (text.trim()) {
+          appendTranscript(text);
+          setError('');
+          setAudioHelp('Transcription received. Keep the Quo/OpenPhone tab open while talking.');
+        } else {
+          setAudioHelp('Audio was received, but no clear speech was detected in that chunk. Keep talking or click Coach Now after more transcript appears.');
+        }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Could not transcribe tab audio.');
+        const message = err instanceof Error ? err.message : 'Could not transcribe tab audio.';
+        const lower = message.toLowerCase();
+        const isRecoverableAudioChunk =
+          lower.includes('corrupted') ||
+          lower.includes('unsupported') ||
+          lower.includes('invalid file') ||
+          lower.includes('no speech') ||
+          lower.includes('no usable audio') ||
+          lower.includes('audio too short');
+
+        transcribeErrorCountRef.current += 1;
+
+        if (isRecoverableAudioChunk) {
+          setAudioHelp('Skipped one noisy/silent audio chunk. This is normal on longer calls. Keep the tab capture running.');
+          if (transcribeErrorCountRef.current >= 4) {
+            setError('Several audio chunks could not be transcribed. Stop and start Capture Tab Audio again if no transcript appears.');
+          }
+        } else {
+          setError(message);
+        }
       } finally {
         setTranscribing(false);
       }
@@ -464,7 +586,7 @@ export function LiveCallCoachPage() {
       mediaRecorderRef.current = recorder;
       setListeningMode('tab-audio');
 
-      recorder.start(15000);
+      recorder.start(20000);
       setCopied('Tab audio capture started. Keep the selected call tab open while talking.');
       window.setTimeout(() => setCopied(''), 2200);
     } catch (err) {
@@ -486,6 +608,7 @@ export function LiveCallCoachPage() {
     setError('');
     setCopied('');
     lastAnalyzedRef.current = '';
+    transcribeErrorCountRef.current = 0;
   };
 
   const copy = async (value: string, label = 'Copied.') => {
@@ -501,7 +624,7 @@ export function LiveCallCoachPage() {
           <p className="page-kicker">AI COMMAND CENTER</p>
           <h1 className="page-title">Live Call Coach</h1>
           <p className="page-subtitle">
-            Use microphone mode for speaker calls, or tab audio mode when your Quo/OpenPhone call is in the browser and you are wearing headphones.
+            Use microphone or tab audio mode. The green live suggestion stays available while the call is happening, then OpenAI refines it when enough transcript is captured.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
@@ -559,7 +682,7 @@ export function LiveCallCoachPage() {
                 />
               </div>
               <p className="mt-2 text-xs text-slate-500">
-                Quick test: play audio in the Quo/OpenPhone tab. If this bar does not move, the system is not receiving that tab audio yet.
+                Quick test: play audio in the Quo/OpenPhone tab. If this bar does not move, the system is not receiving that tab audio yet. Occasional skipped/corrupted chunks on long calls are okay.
               </p>
             </div>
           </div>
@@ -573,7 +696,7 @@ export function LiveCallCoachPage() {
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
                   <CardTitle className="flex items-center gap-2"><PhoneCall className="h-5 w-5 text-ga-700" /> Call controls</CardTitle>
-                  <CardDescription>Choose the audio source, then the AI will coach from the transcript.</CardDescription>
+                  <CardDescription>Choose the audio source. The system shows a quick suggested reply while the transcript grows.</CardDescription>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {listening ? (
@@ -663,18 +786,34 @@ export function LiveCallCoachPage() {
               <CardDescription className="text-ga-100">Read this while talking to the customer.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <Badge tone={decisionTone(instantSuggestion.decision)}>{instantSuggestion.decision}</Badge>
+                  <Badge tone="green">Live suggestion</Badge>
+                </div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Say this now</p>
+                <p className="mt-2 whitespace-pre-wrap text-sm font-semibold leading-6 text-emerald-950">{instantSuggestion.say}</p>
+                <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-emerald-700">Ask next</p>
+                <p className="mt-1 text-sm leading-6 text-emerald-900">{instantSuggestion.ask}</p>
+                <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-red-700">Careful</p>
+                <p className="mt-1 text-sm leading-6 text-red-800">{instantSuggestion.warning}</p>
+                <Button className="mt-3" size="sm" variant="secondary" onClick={() => copy(instantSuggestion.say, 'Live suggestion copied.')} leftIcon={<Clipboard className="h-4 w-4" />}>
+                  Copy live line
+                </Button>
+              </div>
+
               {coach ? (
                 <>
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge tone={decisionTone(coach.decision)}>{coach.decision}</Badge>
-                    <Badge tone="blue">Confidence: {coach.confidence}</Badge>
+                    <Badge tone="blue">OpenAI confidence: {coach.confidence}</Badge>
                   </div>
 
-                  <div className="rounded-2xl border border-ga-200 bg-ga-50 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-ga-700">Say this next</p>
-                    <p className="mt-2 whitespace-pre-wrap text-sm font-medium leading-6 text-ga-950">{coach.sayThisNext}</p>
+                  <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">OpenAI refined line</p>
+                    <p className="mt-2 whitespace-pre-wrap text-sm font-medium leading-6 text-blue-950">{coach.sayThisNext}</p>
                     <Button className="mt-3" size="sm" variant="secondary" onClick={() => copy(coach.sayThisNext, 'Suggested response copied.')} leftIcon={<Clipboard className="h-4 w-4" />}>
-                      Copy line
+                      Copy refined line
                     </Button>
                   </div>
 
@@ -723,7 +862,7 @@ export function LiveCallCoachPage() {
                 </>
               ) : (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
-                  Start microphone or capture tab audio, then click <span className="font-semibold text-slate-900">Coach Now</span>. If Auto Coach is on, suggestions will refresh as the transcript grows.
+                  The green Live Suggestion updates immediately from the latest transcript. Click <span className="font-semibold text-slate-900">Coach Now</span> for a deeper OpenAI/SOP review when needed.
                 </div>
               )}
             </CardContent>
