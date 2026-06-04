@@ -26,6 +26,7 @@ import { DEFAULT_TOPICS } from '@/lib/constants';
 import { listAIMemories } from '@/services/aiMemory';
 import { listEscalations } from '@/services/escalations';
 import { getLiveCallCoaching, transcribeCallAudio, type LiveCoachResult } from '@/services/liveCallCoach';
+import { fetchQuoCallTranscript } from '@/services/quoCalls';
 import type { AIMemory, Escalation } from '@/types';
 
 type SpeechRecognitionEventLike = Event & {
@@ -157,6 +158,44 @@ function getInstantSuggestion(transcript: string): InstantSuggestion {
   };
 }
 
+function findRelevantMemory(transcript: string, memories: AIMemory[]) {
+  const text = transcript.toLowerCase();
+  if (!text.trim()) return null;
+
+  const scored = memories
+    .filter((memory) => memory.is_active)
+    .map((memory) => {
+      const haystack = `${memory.title} ${memory.summary} ${(memory.tags ?? []).join(' ')}`.toLowerCase();
+      let score = 0;
+
+      for (const token of text.split(/[^a-z0-9]+/).filter((word) => word.length > 3)) {
+        if (haystack.includes(token)) score += 1;
+      }
+
+      if (/(cleanup|clean up|mulch|weeding|trimming|project|plant|bed)/i.test(text) && /(cleanup|mulch|weeding|trimming|project|fully booked|june)/i.test(haystack)) score += 8;
+      if (/(payment|invoice|card|auto pay|automatic payment)/i.test(text) && /(payment|invoice|card|homeworks)/i.test(haystack)) score += 8;
+      if (/(mow|mowing|turf|fertilizer|weed control)/i.test(text) && /(mow|mowing|turf|fertilizer|weed control)/i.test(haystack)) score += 6;
+      if (/(complaint|upset|frustrated|damage|not finished|call me)/i.test(text) && /(complaint|call|damage|bradley|escalate)/i.test(haystack)) score += 6;
+
+      return { memory, score };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  return scored[0]?.memory ?? null;
+}
+
+function getMemoryBasedSuggestion(transcript: string, memories: AIMemory[]) {
+  const memory = findRelevantMemory(transcript, memories);
+  if (!memory) return null;
+
+  return {
+    title: memory.title,
+    summary: memory.summary,
+    tags: memory.tags ?? []
+  };
+}
+
 function buildCallNotes(transcript: string, coach: LiveCoachResult | null) {
   return [
     'LIVE CALL NOTES',
@@ -196,6 +235,8 @@ export function LiveCallCoachPage() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [audioHealth, setAudioHealth] = useState<AudioHealth>('idle');
   const [audioHelp, setAudioHelp] = useState('Capture a Quo/OpenPhone tab and check Share tab audio.');
+  const [quoCallId, setQuoCallId] = useState('');
+  const [quoLoading, setQuoLoading] = useState(false);
 
   const listening = listeningMode !== null;
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
@@ -310,6 +351,7 @@ export function LiveCallCoachPage() {
   }, [manualContext, finalTranscript, interimTranscript]);
 
   const instantSuggestion = useMemo(() => getInstantSuggestion(transcript), [transcript]);
+  const memorySuggestion = useMemo(() => getMemoryBasedSuggestion(transcript, memories), [transcript, memories]);
 
   useEffect(() => {
     let mounted = true;
@@ -599,6 +641,42 @@ export function LiveCallCoachPage() {
     }
   };
 
+  const addCustomerSaidAndCoach = () => {
+    const clean = manualContext.trim();
+    if (!clean) {
+      setError('Type what the customer just said first.');
+      return;
+    }
+
+    appendTranscript(`Customer: ${clean}`);
+    setManualContext('');
+    window.setTimeout(() => void requestCoaching(true), 250);
+  };
+
+  const importQuoTranscript = async () => {
+    const cleanCallId = quoCallId.trim();
+    if (!cleanCallId) {
+      setError('Paste a Quo/OpenPhone Call ID first. It usually starts with AC.');
+      return;
+    }
+
+    setError('');
+    setCopied('');
+    setQuoLoading(true);
+
+    try {
+      const result = await fetchQuoCallTranscript(cleanCallId);
+      appendTranscript(result.transcript);
+      setCopied(`Imported Quo transcript for call ${result.callId}.`);
+      window.setTimeout(() => setCopied(''), 2400);
+      window.setTimeout(() => void requestCoaching(true), 500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to import Quo/OpenPhone transcript.');
+    } finally {
+      setQuoLoading(false);
+    }
+  };
+
   const clearCall = () => {
     stopListening();
     setFinalTranscript('');
@@ -624,7 +702,7 @@ export function LiveCallCoachPage() {
           <p className="page-kicker">AI COMMAND CENTER</p>
           <h1 className="page-title">Live Call Coach</h1>
           <p className="page-subtitle">
-            Use microphone or tab audio mode. The green live suggestion stays available while the call is happening, then OpenAI refines it when enough transcript is captured.
+            Parakeet-style live call coach for Carl. Use Customer Audio when the call is in Quo/OpenPhone, or type what the customer said. Suggestions use AI Memory and SOP.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
@@ -635,6 +713,28 @@ export function LiveCallCoachPage() {
 
       {error ? <Alert className="mb-5 text-red-700">{error}</Alert> : null}
       {copied ? <div className="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{copied}</div> : null}
+
+      <Card className="mb-5 border-ga-200">
+        <CardContent className="p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-wide text-ga-700">Parakeet-style workflow</p>
+              <h2 className="mt-1 text-xl font-bold text-slate-950">Read the green “Say this now” box while you are on the call.</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                Best live setup: Quo/OpenPhone call in Chrome or Edge → Start Customer Audio → choose the call tab → check Share tab audio. The coach uses your AI Memory, SOP lessons, and recent cases.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" onClick={startTabAudioListening} disabled={listening} leftIcon={<MonitorUp className="h-4 w-4" />}>
+                Start Customer Audio
+              </Button>
+              <Button type="button" variant="secondary" onClick={() => requestCoaching(true)} disabled={coaching || contextLoading} leftIcon={coaching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}>
+                Refresh Coach
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="mb-5 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
         <p className="font-semibold">Headphones setup</p>
@@ -705,12 +805,12 @@ export function LiveCallCoachPage() {
                     </Button>
                   ) : (
                     <>
-                      <Button onClick={startMicrophoneListening} leftIcon={<Mic className="h-4 w-4" />}>Use Microphone</Button>
-                      <Button variant="secondary" onClick={startTabAudioListening} leftIcon={<MonitorUp className="h-4 w-4" />}>Capture Tab Audio</Button>
+                      <Button onClick={startMicrophoneListening} leftIcon={<Mic className="h-4 w-4" />}>Mic Fallback</Button>
+                      <Button variant="secondary" onClick={startTabAudioListening} leftIcon={<MonitorUp className="h-4 w-4" />}>Start Customer Audio</Button>
                     </>
                   )}
                   <Button variant={autoCoach ? 'warning' : 'secondary'} onClick={() => setAutoCoach((current) => !current)} leftIcon={<Radio className="h-4 w-4" />}>
-                    {autoCoach ? 'Auto Coach On' : 'Auto Coach Off'}
+                    {autoCoach ? 'Live Coach On' : 'Live Coach Off'}
                   </Button>
                   <Button variant="secondary" onClick={() => requestCoaching(true)} disabled={coaching || contextLoading} leftIcon={coaching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}>
                     Coach Now
@@ -730,6 +830,32 @@ export function LiveCallCoachPage() {
                 </div>
               </div>
 
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+                  <div className="flex-1">
+                    <Label htmlFor="quo-call-id">Quo/OpenPhone API import</Label>
+                    <input
+                      id="quo-call-id"
+                      value={quoCallId}
+                      onChange={(event) => setQuoCallId(event.target.value)}
+                      placeholder="Paste completed Call ID, example AC3700..."
+                      className="mt-1 w-full rounded-xl border border-emerald-200 bg-white px-3 py-2 text-sm outline-none focus:border-ga-500 focus:ring-2 focus:ring-ga-500/20"
+                    />
+                    <p className="mt-2 text-xs leading-5 text-emerald-900">
+                      This is for completed calls/transcripts from Quo/OpenPhone API. It is more reliable than tab audio, but it is not true live audio.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    onClick={importQuoTranscript}
+                    disabled={quoLoading}
+                    leftIcon={quoLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  >
+                    {quoLoading ? 'Importing...' : 'Import Transcript'}
+                  </Button>
+                </div>
+              </div>
+
               <div className="grid gap-3 md:grid-cols-2">
                 <div className={`rounded-2xl border p-4 text-sm ${listeningMode === 'microphone' ? 'border-ga-300 bg-ga-50 text-ga-900' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
                   <div className="mb-1 flex items-center gap-2 font-semibold"><Mic className="h-4 w-4" /> Microphone Mode</div>
@@ -737,7 +863,7 @@ export function LiveCallCoachPage() {
                 </div>
                 <div className={`rounded-2xl border p-4 text-sm ${listeningMode === 'tab-audio' ? 'border-blue-300 bg-blue-50 text-blue-900' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
                   <div className="mb-1 flex items-center gap-2 font-semibold"><Volume2 className="h-4 w-4" /> Tab Audio Mode</div>
-                  <p>Use this for Quo/OpenPhone browser calls while wearing headphones.</p>
+                  <p>Best live mode. Use this for Quo/OpenPhone browser calls while wearing headphones.</p>
                 </div>
               </div>
             </CardContent>
@@ -760,12 +886,17 @@ export function LiveCallCoachPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div>
-                <Label htmlFor="manual-context">Manual context / call setup</Label>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <Label htmlFor="manual-context">Type what the customer just said</Label>
+                  <Button type="button" size="sm" variant="secondary" onClick={addCustomerSaidAndCoach} leftIcon={<Sparkles className="h-4 w-4" />}>
+                    Add + Coach
+                  </Button>
+                </div>
                 <Textarea
                   id="manual-context"
                   value={manualContext}
                   onChange={(event) => setManualContext(event.target.value)}
-                  placeholder="Optional: type customer name, address, service, or context before/during the call."
+                  placeholder="Example: Customer said the crew did not finish mowing and wants Bradley to call."
                   className="min-h-[90px]"
                 />
               </div>
@@ -801,6 +932,14 @@ export function LiveCallCoachPage() {
                   Copy live line
                 </Button>
               </div>
+
+              {memorySuggestion ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">AI Memory matched</p>
+                  <p className="mt-1 text-sm font-semibold text-amber-950">{memorySuggestion.title}</p>
+                  <p className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap text-xs leading-5 text-amber-900">{memorySuggestion.summary}</p>
+                </div>
+              ) : null}
 
               {coach ? (
                 <>
@@ -862,7 +1001,7 @@ export function LiveCallCoachPage() {
                 </>
               ) : (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
-                  The green Live Suggestion updates immediately from the latest transcript. Click <span className="font-semibold text-slate-900">Coach Now</span> for a deeper OpenAI/SOP review when needed.
+                  The green Live Suggestion updates immediately from the latest transcript. Click <span className="font-semibold text-slate-900">Refresh Coach</span> for a deeper OpenAI/SOP review when needed.
                 </div>
               )}
             </CardContent>
@@ -870,10 +1009,10 @@ export function LiveCallCoachPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2"><RefreshCw className="h-5 w-5 text-ga-700" /> How to use with headphones</CardTitle>
+              <CardTitle className="flex items-center gap-2"><RefreshCw className="h-5 w-5 text-ga-700" /> How to use live coach</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 text-sm text-slate-600">
-              <p>Open the Quo/OpenPhone call in a Chrome or Edge browser tab.</p>
+              <p>For live coaching while wearing headphones, use Start Customer Audio and select the Quo/OpenPhone browser tab.</p>
               <p>Click <span className="font-semibold text-slate-900">Capture Tab Audio</span>, choose the Quo/OpenPhone tab, not the Green Acres tab, and check <span className="font-semibold text-slate-900">Share tab audio</span>.</p>
               <p>Watch the Audio Debug meter. If it says <span className="font-semibold text-slate-900">Hearing audio</span>, the system is receiving sound from the call tab.</p>
               <p>If the meter does not move, stop capture and try again. Make sure the selected tab is not muted and that audio is actually playing in that tab.</p>
