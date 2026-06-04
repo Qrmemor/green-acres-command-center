@@ -257,7 +257,7 @@ function getCallStage(transcript: string): CallStage {
         !hasAddress ? 'What is the property address?' : '',
         !hasPhotos ? 'Can you send photos or a short video of the area?' : '',
         !hasTimeline ? 'Do you have a specific deadline or are you flexible on timing?' : '',
-        !hasAccess ? 'Any gate, pet, or access notes?'
+        !hasAccess ? 'Any gate, pet, or access notes?' : ''
       ].filter(Boolean).join('\n') || 'Confirm if they are okay with reconnecting later or if timing is urgent.',
       endCall: 'End after setting expectation and collecting photos/address. Escalate only if timing is urgent, customer is upset, scope/pricing is unusual, or you are not sure.'
     };
@@ -296,7 +296,7 @@ function getCallStage(transcript: string): CallStage {
       !hasAddress ? 'What is the property address?' : '',
       'What service are you looking for?',
       !hasTimeline ? 'Do you have a target timeline?' : '',
-      !hasAccess ? 'Any access notes, gates, pets, or parking issues?'
+      !hasAccess ? 'Any access notes, gates, pets, or parking issues?' : ''
     ].filter(Boolean).join('\n'),
     endCall: 'End once the basic intake is complete and you have told them you will review internally and follow up.'
   };
