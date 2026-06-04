@@ -26,7 +26,6 @@ import { DEFAULT_TOPICS } from '@/lib/constants';
 import { listAIMemories } from '@/services/aiMemory';
 import { listEscalations } from '@/services/escalations';
 import { getLiveCallCoaching, transcribeCallAudio, type LiveCoachResult } from '@/services/liveCallCoach';
-import { fetchQuoCallTranscript } from '@/services/quoCalls';
 import type { AIMemory, Escalation } from '@/types';
 
 type SpeechRecognitionEventLike = Event & {
@@ -196,6 +195,113 @@ function getMemoryBasedSuggestion(transcript: string, memories: AIMemory[]) {
   };
 }
 
+type CallStage = {
+  label: string;
+  step: string;
+  say: string;
+  ask: string;
+  endCall: string;
+};
+
+function getCallStage(transcript: string): CallStage {
+  const text = transcript.toLowerCase();
+
+  const hasName = /(name is|my name|this is|i'm|i am|customer:)/i.test(transcript) || /\b[A-Z][a-z]+\s+[A-Z][a-z]+\b/.test(transcript);
+  const hasAddress = /\b\d{2,6}\s+[a-z0-9 .'-]+\s+(street|st|drive|dr|road|rd|lane|ln|court|ct|avenue|ave|way|circle|cir|place|pl|boulevard|blvd)\b/i.test(transcript);
+  const hasPhotos = /(photo|photos|picture|pictures|video|screenshot|sent)/i.test(text);
+  const hasTimeline = /(today|tomorrow|this week|next week|asap|soon|urgent|deadline|when|timing|schedule)/i.test(text);
+  const hasAccess = /(gate|pet|dog|access|fence|locked|parking|backyard|front yard)/i.test(text);
+
+  if (!text.trim()) {
+    return {
+      label: 'Step 1',
+      step: 'Open the call',
+      say: 'Hi, this is Carl with Green Acres. How can I help you today?',
+      ask: 'Let the customer explain first. Do not interrupt unless needed.',
+      endCall: 'Not yet. Start by understanding the request.'
+    };
+  }
+
+  if (/(estimate|quote|how much|cost|price|pricing)/i.test(text)) {
+    if (!hasAddress || !hasPhotos) {
+      return {
+        label: 'Estimate Intake',
+        step: 'Collect estimate basics',
+        say: 'I can help gather the details for an estimate. The best first step is to collect the property address and photos or a short video of the area.',
+        ask: [
+          !hasName ? 'Can I get your full name?' : '',
+          !hasAddress ? 'What is the property address?' : '',
+          !hasPhotos ? 'Can you send photos or a short video of the area?' : '',
+          !hasTimeline ? 'Is there a specific timeline or deadline you are hoping for?' : '',
+          !hasAccess ? 'Are there any gate, pet, access, or parking notes we should know about?' : ''
+        ].filter(Boolean).join('\n'),
+        endCall: 'End the call after you have name, address, photos/video request, timeline, and access notes. Then tell them you will review internally and follow up.'
+      };
+    }
+
+    return {
+      label: 'Estimate Ready',
+      step: 'Confirm and close the call',
+      say: 'Thank you. I have the key details. I’ll review this internally so we can confirm the best next step.',
+      ask: 'Before we hang up, is there anything unusual about the property access, pets, gates, or timing that we should know?',
+      endCall: 'Yes, you can end after confirming the final access/timing details and telling them you will follow up.'
+    };
+  }
+
+  if (/(cleanup|clean up|mulch|weeding|weed|trimming|bush|plant|bed|project)/i.test(text)) {
+    return {
+      label: 'Project Work',
+      step: 'Set project-work expectation',
+      say: 'For cleanup or project work, I can gather the details and photos first. We are currently booked out for project work, so I want to make sure we set the right expectation before promising timing.',
+      ask: [
+        !hasAddress ? 'What is the property address?' : '',
+        !hasPhotos ? 'Can you send photos or a short video of the area?' : '',
+        !hasTimeline ? 'Do you have a specific deadline or are you flexible on timing?' : '',
+        !hasAccess ? 'Any gate, pet, or access notes?'
+      ].filter(Boolean).join('\n') || 'Confirm if they are okay with reconnecting later or if timing is urgent.',
+      endCall: 'End after setting expectation and collecting photos/address. Escalate only if timing is urgent, customer is upset, scope/pricing is unusual, or you are not sure.'
+    };
+  }
+
+  if (/(mow|mowing|lawn|grass|turf|fertilizer|weed control)/i.test(text)) {
+    return {
+      label: 'Lawn / Turf',
+      step: 'Separate mowing vs turf',
+      say: 'I can help with that. I just want to confirm whether you are asking about regular mowing or the turf program like fertilizer and weed control.',
+      ask: [
+        !hasAddress ? 'What is the property address?' : '',
+        'Are you looking for mowing, turf treatments, or both?',
+        !hasTimeline ? 'When would you like service to start?' : ''
+      ].filter(Boolean).join('\n'),
+      endCall: 'End after confirming service type, address, and timing. If pricing or scope is unclear, escalate to Bradley.'
+    };
+  }
+
+  if (/(call me|call back|bradley|complaint|upset|frustrated|damage|not finished|wrong|refund|discount|credit)/i.test(text)) {
+    return {
+      label: 'Escalate',
+      step: 'Protect the call',
+      say: 'I understand. I’ll make a clear note of this and have it reviewed internally so we handle it correctly.',
+      ask: 'Can you tell me exactly what happened, the best call-back number, and any photo or detail that would help Bradley review it?',
+      endCall: 'End after you have the issue summary, call-back number, and any evidence/photos. Do not promise Bradley will call at a specific time.'
+    };
+  }
+
+  return {
+    label: 'Info Gathering',
+    step: 'Clarify the request',
+    say: 'Got it. I’ll gather the details first so we can decide the correct next step without overpromising.',
+    ask: [
+      !hasName ? 'Can I get your full name?' : '',
+      !hasAddress ? 'What is the property address?' : '',
+      'What service are you looking for?',
+      !hasTimeline ? 'Do you have a target timeline?' : '',
+      !hasAccess ? 'Any access notes, gates, pets, or parking issues?'
+    ].filter(Boolean).join('\n'),
+    endCall: 'End once the basic intake is complete and you have told them you will review internally and follow up.'
+  };
+}
+
 function buildCallNotes(transcript: string, coach: LiveCoachResult | null) {
   return [
     'LIVE CALL NOTES',
@@ -235,8 +341,6 @@ export function LiveCallCoachPage() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [audioHealth, setAudioHealth] = useState<AudioHealth>('idle');
   const [audioHelp, setAudioHelp] = useState('Capture a Quo/OpenPhone tab and check Share tab audio.');
-  const [quoCallId, setQuoCallId] = useState('');
-  const [quoLoading, setQuoLoading] = useState(false);
 
   const listening = listeningMode !== null;
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
@@ -352,6 +456,7 @@ export function LiveCallCoachPage() {
 
   const instantSuggestion = useMemo(() => getInstantSuggestion(transcript), [transcript]);
   const memorySuggestion = useMemo(() => getMemoryBasedSuggestion(transcript, memories), [transcript, memories]);
+  const callStage = useMemo(() => getCallStage(transcript), [transcript]);
 
   useEffect(() => {
     let mounted = true;
@@ -644,37 +749,13 @@ export function LiveCallCoachPage() {
   const addCustomerSaidAndCoach = () => {
     const clean = manualContext.trim();
     if (!clean) {
-      setError('Type what the customer just said first.');
+      setError('Type customer said first.');
       return;
     }
 
     appendTranscript(`Customer: ${clean}`);
     setManualContext('');
     window.setTimeout(() => void requestCoaching(true), 250);
-  };
-
-  const importQuoTranscript = async () => {
-    const cleanCallId = quoCallId.trim();
-    if (!cleanCallId) {
-      setError('Paste a Quo/OpenPhone Call ID first. It usually starts with AC.');
-      return;
-    }
-
-    setError('');
-    setCopied('');
-    setQuoLoading(true);
-
-    try {
-      const result = await fetchQuoCallTranscript(cleanCallId);
-      appendTranscript(result.transcript);
-      setCopied(`Imported Quo transcript for call ${result.callId}.`);
-      window.setTimeout(() => setCopied(''), 2400);
-      window.setTimeout(() => void requestCoaching(true), 500);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to import Quo/OpenPhone transcript.');
-    } finally {
-      setQuoLoading(false);
-    }
   };
 
   const clearCall = () => {
@@ -702,7 +783,7 @@ export function LiveCallCoachPage() {
           <p className="page-kicker">AI COMMAND CENTER</p>
           <h1 className="page-title">Live Call Coach</h1>
           <p className="page-subtitle">
-            Parakeet-style live call coach for Carl. Use Customer Audio when the call is in Quo/OpenPhone, or type what the customer said. Suggestions use AI Memory and SOP.
+            Simple live call coach. It guides Carl step by step from opening the call, collecting details, knowing what to say next, and when to end or escalate.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
@@ -718,28 +799,23 @@ export function LiveCallCoachPage() {
         <CardContent className="p-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <p className="text-sm font-semibold uppercase tracking-wide text-ga-700">Parakeet-style workflow</p>
-              <h2 className="mt-1 text-xl font-bold text-slate-950">Read the green “Say this now” box while you are on the call.</h2>
+              <p className="text-sm font-semibold uppercase tracking-wide text-ga-700">Live call flow</p>
+              <h2 className="mt-1 text-xl font-bold text-slate-950">Read only the right-side coach box while talking.</h2>
               <p className="mt-2 text-sm leading-6 text-slate-600">
-                Best live setup: Quo/OpenPhone call in Chrome or Edge → Start Customer Audio → choose the call tab → check Share tab audio. The coach uses your AI Memory, SOP lessons, and recent cases.
+                The coach will tell you what to say, what to ask next, and when it is safe to end the call. It uses SOP, AI Memory, and the transcript.
               </p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <Button type="button" onClick={startTabAudioListening} disabled={listening} leftIcon={<MonitorUp className="h-4 w-4" />}>
-                Start Customer Audio
-              </Button>
-              <Button type="button" variant="secondary" onClick={() => requestCoaching(true)} disabled={coaching || contextLoading} leftIcon={coaching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}>
-                Refresh Coach
-              </Button>
-            </div>
+            <Button type="button" onClick={startTabAudioListening} disabled={listening} leftIcon={<MonitorUp className="h-4 w-4" />}>
+              Start Live Coach
+            </Button>
           </div>
         </CardContent>
       </Card>
 
       <div className="mb-5 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
-        <p className="font-semibold">Headphones setup</p>
+        <p className="font-semibold">How to connect the call audio</p>
         <p className="mt-1">
-          If you are wearing headphones, use <span className="font-semibold">Capture Tab Audio</span>. Select the Quo/OpenPhone browser tab and check <span className="font-semibold">Share tab audio</span>. This lets the system hear the customer audio from that tab.
+          Click <span className="font-semibold">Start Live Coach</span>, choose the Quo/OpenPhone call tab, then check <span className="font-semibold">Share tab audio</span>. If it fails, type what the customer said and click Add + Coach.
         </p>
       </div>
 
@@ -795,8 +871,8 @@ export function LiveCallCoachPage() {
             <CardHeader>
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <CardTitle className="flex items-center gap-2"><PhoneCall className="h-5 w-5 text-ga-700" /> Call controls</CardTitle>
-                  <CardDescription>Choose the audio source. The system shows a quick suggested reply while the transcript grows.</CardDescription>
+                  <CardTitle className="flex items-center gap-2"><PhoneCall className="h-5 w-5 text-ga-700" /> Live input</CardTitle>
+                  <CardDescription>Start customer audio or type what the customer just said.</CardDescription>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {listening ? (
@@ -805,12 +881,12 @@ export function LiveCallCoachPage() {
                     </Button>
                   ) : (
                     <>
-                      <Button onClick={startMicrophoneListening} leftIcon={<Mic className="h-4 w-4" />}>Mic Fallback</Button>
-                      <Button variant="secondary" onClick={startTabAudioListening} leftIcon={<MonitorUp className="h-4 w-4" />}>Start Customer Audio</Button>
+                      <Button onClick={startMicrophoneListening} leftIcon={<Mic className="h-4 w-4" />}>Mic / Speaker</Button>
+                      <Button variant="secondary" onClick={startTabAudioListening} leftIcon={<MonitorUp className="h-4 w-4" />}>Start Live Coach</Button>
                     </>
                   )}
                   <Button variant={autoCoach ? 'warning' : 'secondary'} onClick={() => setAutoCoach((current) => !current)} leftIcon={<Radio className="h-4 w-4" />}>
-                    {autoCoach ? 'Live Coach On' : 'Live Coach Off'}
+                    {autoCoach ? 'Auto Coach On' : 'Auto Coach Off'}
                   </Button>
                   <Button variant="secondary" onClick={() => requestCoaching(true)} disabled={coaching || contextLoading} leftIcon={coaching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}>
                     Coach Now
@@ -827,32 +903,6 @@ export function LiveCallCoachPage() {
                 <div>
                   <Label htmlFor="live-topic">Topic</Label>
                   <Select id="live-topic" value={topic} onChange={(event) => setTopic(event.target.value)} options={DEFAULT_TOPICS} />
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
-                  <div className="flex-1">
-                    <Label htmlFor="quo-call-id">Quo/OpenPhone API import</Label>
-                    <input
-                      id="quo-call-id"
-                      value={quoCallId}
-                      onChange={(event) => setQuoCallId(event.target.value)}
-                      placeholder="Paste completed Call ID, example AC3700..."
-                      className="mt-1 w-full rounded-xl border border-emerald-200 bg-white px-3 py-2 text-sm outline-none focus:border-ga-500 focus:ring-2 focus:ring-ga-500/20"
-                    />
-                    <p className="mt-2 text-xs leading-5 text-emerald-900">
-                      This is for completed calls/transcripts from Quo/OpenPhone API. It is more reliable than tab audio, but it is not true live audio.
-                    </p>
-                  </div>
-                  <Button
-                    type="button"
-                    onClick={importQuoTranscript}
-                    disabled={quoLoading}
-                    leftIcon={quoLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                  >
-                    {quoLoading ? 'Importing...' : 'Import Transcript'}
-                  </Button>
                 </div>
               </div>
 
@@ -887,7 +937,7 @@ export function LiveCallCoachPage() {
             <CardContent className="space-y-4">
               <div>
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Label htmlFor="manual-context">Type what the customer just said</Label>
+                  <Label htmlFor="manual-context">Type customer said</Label>
                   <Button type="button" size="sm" variant="secondary" onClick={addCustomerSaidAndCoach} leftIcon={<Sparkles className="h-4 w-4" />}>
                     Add + Coach
                   </Button>
@@ -896,13 +946,13 @@ export function LiveCallCoachPage() {
                   id="manual-context"
                   value={manualContext}
                   onChange={(event) => setManualContext(event.target.value)}
-                  placeholder="Example: Customer said the crew did not finish mowing and wants Bradley to call."
+                  placeholder="Example: I want an estimate for cleanup and mulch."
                   className="min-h-[90px]"
                 />
               </div>
 
               <div ref={transcriptBoxRef} className="min-h-[320px] max-h-[420px] overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-800">
-                {finalTranscript ? <span className="whitespace-pre-wrap">{finalTranscript}</span> : <span className="text-slate-400">Transcript will appear here after you start listening.</span>}
+                {finalTranscript ? <span className="whitespace-pre-wrap">{finalTranscript}</span> : <span className="text-slate-400">Transcript appears here. The coach uses this to guide the call step by step.</span>}
                 {interimTranscript ? <span className="whitespace-pre-wrap text-slate-500"> {interimTranscript}</span> : null}
                 {transcribing ? <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-blue-600">Transcribing tab audio...</p> : null}
               </div>
@@ -913,23 +963,32 @@ export function LiveCallCoachPage() {
         <aside className="space-y-6">
           <Card className="overflow-hidden border-ga-200">
             <CardHeader className="bg-ga-950 text-white">
-              <CardTitle className="flex items-center gap-2 text-white"><Sparkles className="h-5 w-5" /> What to say next</CardTitle>
-              <CardDescription className="text-ga-100">Read this while talking to the customer.</CardDescription>
+              <CardTitle className="flex items-center gap-2 text-white"><Sparkles className="h-5 w-5" /> Live Coach</CardTitle>
+              <CardDescription className="text-ga-100">Follow these steps while talking.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                 <div className="mb-2 flex flex-wrap items-center gap-2">
-                  <Badge tone={decisionTone(instantSuggestion.decision)}>{instantSuggestion.decision}</Badge>
-                  <Badge tone="green">Live suggestion</Badge>
+                  <Badge tone={decisionTone(callStage.label === 'Escalate' ? 'Needs Bradley' : instantSuggestion.decision)}>{callStage.label}</Badge>
+                  <Badge tone="green">Step-by-step</Badge>
                 </div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Say this now</p>
-                <p className="mt-2 whitespace-pre-wrap text-sm font-semibold leading-6 text-emerald-950">{instantSuggestion.say}</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Current step</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-emerald-950">{callStage.step}</p>
+
+                <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-emerald-700">Say this now</p>
+                <p className="mt-1 whitespace-pre-wrap text-base font-bold leading-7 text-emerald-950">{callStage.say}</p>
+
                 <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-emerald-700">Ask next</p>
-                <p className="mt-1 text-sm leading-6 text-emerald-900">{instantSuggestion.ask}</p>
+                <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-emerald-900">{callStage.ask}</p>
+
+                <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-blue-700">Can I end the call?</p>
+                <p className="mt-1 text-sm leading-6 text-blue-900">{callStage.endCall}</p>
+
                 <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-red-700">Careful</p>
                 <p className="mt-1 text-sm leading-6 text-red-800">{instantSuggestion.warning}</p>
-                <Button className="mt-3" size="sm" variant="secondary" onClick={() => copy(instantSuggestion.say, 'Live suggestion copied.')} leftIcon={<Clipboard className="h-4 w-4" />}>
-                  Copy live line
+
+                <Button className="mt-3" size="sm" variant="secondary" onClick={() => copy(callStage.say, 'Current line copied.')} leftIcon={<Clipboard className="h-4 w-4" />}>
+                  Copy line
                 </Button>
               </div>
 
@@ -1001,7 +1060,7 @@ export function LiveCallCoachPage() {
                 </>
               ) : (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
-                  The green Live Suggestion updates immediately from the latest transcript. Click <span className="font-semibold text-slate-900">Refresh Coach</span> for a deeper OpenAI/SOP review when needed.
+                  The green Live Suggestion updates immediately from the latest transcript. Click <span className="font-semibold text-slate-900">Coach Now</span> for a deeper OpenAI/SOP review when needed.
                 </div>
               )}
             </CardContent>
