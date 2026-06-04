@@ -52,14 +52,35 @@ function extractOutputText(data: any) {
 }
 
 function buildTranscript(messages: ChatMessage[]) {
-  return messages
-    .slice(-12)
+  const recent = messages.slice(-12);
+  return recent
     .map((message, index) => {
       const label = message.role === 'assistant' ? 'AI' : 'Carl';
-      const imageNote = message.images?.length ? `\n[${message.images.length} image(s) attached to this message]` : '';
-      return `${index + 1}. ${label}: ${message.text || '[no text]'}${imageNote}`;
+      const imageNote = message.images?.length
+        ? `\n[${message.images.length} screenshot/image attachment(s) on this ${label} message. These images are included after the transcript as visual context.]`
+        : '';
+      return `Message ${index + 1} - ${label}: ${message.text || '[no text]'}${imageNote}`;
     })
     .join('\n\n');
+}
+
+function collectRecentImages(messages: ChatMessage[]) {
+  const recent = messages.slice(-12);
+  const images: Array<{ messageNumber: number; role: 'user' | 'assistant'; image: ChatImage; imageNumber: number }> = [];
+
+  recent.forEach((message, messageIndex) => {
+    (message.images ?? []).forEach((image, imageIndex) => {
+      images.push({
+        messageNumber: messageIndex + 1,
+        role: message.role,
+        image,
+        imageNumber: imageIndex + 1
+      });
+    });
+  });
+
+  // Keep the newest images, but preserve the original order for the model.
+  return images.slice(-8);
 }
 
 export default async function handler(req: any, res: any) {
@@ -79,20 +100,24 @@ export default async function handler(req: any, res: any) {
   try {
     const body: IncomingPayload = req.body ?? {};
     const messages = safeMessages(body.messages).slice(-12);
-    const latestUserMessage = [...messages].reverse().find((message) => message.role === 'user');
-    const latestImages = (latestUserMessage?.images ?? []).slice(0, 8);
+    const recentImages = collectRecentImages(messages);
     const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 
-    const systemPrompt = `You are the Green Acres Command Center AI assistant inside Carl's internal dashboard.\n\nYou help Carl, the VA, decide what to do before escalating to Bradley, the owner. You can read pasted text and screenshots.\n\nCore rules:\n- Never pretend to be Bradley.\n- Never claim a message was sent. You only advise Carl.\n- Respect Green Acres SOP and saved AI memories.\n- If a customer is angry, asks for a call, requests refund/discount, has a complaint, scope dispute, property damage, safety concern, commercial/HOA lead, collections issue, crew no-show, outside service area, job likely over $2,000, or Carl is not 100% sure, recommend escalating to Bradley.\n- If it is normal intake, ask for missing info first: full name, property address, service requested, timeline, photos/video, gate/access, pets, parking, irrigation/invisible fence, obstacles, and where to continue.\n- If saved AI Memory clearly gives a Carl-safe SOP reply, suggest that instead of escalating, unless there is a high-risk trigger.\n- For cleanup/project work that is fully booked until June, Carl can usually send the fully booked message unless the customer is upset, timing is urgent, scope/pricing is unusual, or it is mowing/turf.\n- Keep replies concise, practical, and SOP-locked.\n\nWhen helpful, answer with:\n1. Recommendation\n2. Why\n3. Missing info\n4. Suggested next step\n5. Suggested customer reply\n\nIf your recommendation is Needs Bradley, include enough detail for Carl to create an escalation. Use concise labels and avoid vague filler. The app may convert your answer into an escalation draft.\n\nFor screenshots, read the visible conversation carefully and summarize only what matters.`;
+    const systemPrompt = `You are the Green Acres Command Center AI assistant inside Carl's internal dashboard.\n\nYou help Carl, the VA, decide what to do before escalating to Bradley, the owner. You can read pasted text and screenshots.\n\nCore rules:\n- Never pretend to be Bradley.\n- Never claim a message was sent. You only advise Carl.\n- Respect Green Acres SOP and saved AI memories.\n- If a customer is angry, asks for a call, requests refund/discount, has a complaint, scope dispute, property damage, safety concern, commercial/HOA lead, collections issue, crew no-show, outside service area, job likely over $2,000, or Carl is not 100% sure, recommend escalating to Bradley.\n- If it is normal intake, ask for missing info first: full name, property address, service requested, timeline, photos/video, gate/access, pets, parking, irrigation/invisible fence, obstacles, and where to continue.\n- If saved AI Memory clearly gives a Carl-safe SOP reply, suggest that instead of escalating, unless there is a high-risk trigger.\n- For cleanup/project work that is fully booked until June, Carl can usually send the fully booked message unless the customer is upset, timing is urgent, scope/pricing is unusual, or it is mowing/turf.\n- Keep replies concise, practical, and SOP-locked.\n- Maintain the chat context until Carl clicks New chat. If Carl asks a follow-up like "where did you see that?" or "saan mo nakita yan?", use the previous messages and screenshots already in this same chat. Do not say there is no screenshot if earlier messages had screenshots.\n- When referring to screenshot evidence, briefly say what visible text or clue you used.\n\nWhen helpful, answer with:\n1. Recommendation\n2. Why\n3. Missing info\n4. Suggested next step\n5. Suggested customer reply\n\nIf your recommendation is Needs Bradley, include enough detail for Carl to create an escalation. Use concise labels and avoid vague filler. The app may convert your answer into an escalation draft.\n\nFor screenshots, read the visible conversation carefully and summarize only what matters.`;
 
-    const contextText = `SOURCE: ${body.source || 'Unknown'}\nTOPIC: ${body.topic || 'Other'}\n\nSAVED AI MEMORIES:\n${clampText((body.memories ?? []).slice(0, 12), 12000)}\n\nSIMILAR PAST CASES:\n${clampText((body.similarCases ?? []).slice(0, 6), 8000)}\n\nCHAT TRANSCRIPT:\n${clampText(buildTranscript(messages), 14000)}`;
+    const contextText = `SOURCE: ${body.source || 'Unknown'}\nTOPIC: ${body.topic || 'Other'}\n\nIMPORTANT CONTINUITY RULE:\nThis is one ongoing chat session. Use previous user messages, assistant replies, and prior screenshots/images until Carl clicks New chat. If Carl asks a follow-up, answer from the previous context instead of asking him to upload the same screenshot again.\n\nSAVED AI MEMORIES:\n${clampText((body.memories ?? []).slice(0, 12), 12000)}\n\nSIMILAR PAST CASES:\n${clampText((body.similarCases ?? []).slice(0, 6), 8000)}\n\nCHAT TRANSCRIPT:\n${clampText(buildTranscript(messages), 14000)}\n\nRECENT SCREENSHOTS INCLUDED: ${recentImages.length}`;
 
     const content: Array<Record<string, unknown>> = [
       { type: 'input_text', text: contextText }
     ];
 
-    for (const image of latestImages) {
-      content.push({ type: 'input_image', image_url: image.dataUrl });
+    for (const item of recentImages) {
+      const label = item.role === 'assistant' ? 'AI' : 'Carl';
+      content.push({
+        type: 'input_text',
+        text: `Screenshot/image ${item.imageNumber} from Message ${item.messageNumber} (${label}). Use this as visual context for follow-up questions. File name: ${item.image.name || 'pasted screenshot'}`
+      });
+      content.push({ type: 'input_image', image_url: item.image.dataUrl });
     }
 
     const response = await fetch(OPENAI_API_URL, {
