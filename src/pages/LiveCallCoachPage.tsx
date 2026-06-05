@@ -203,14 +203,40 @@ type CallStage = {
   endCall: string;
 };
 
+function getCustomerLines(transcript: string) {
+  return transcript
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => /^customer\s*:/i.test(line));
+}
+
+function getLatestCustomerText(transcript: string) {
+  const customerLines = getCustomerLines(transcript);
+  const latest = customerLines.at(-1) || transcript.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1) || '';
+  return latest.replace(/^customer\s*:\s*/i, '').trim();
+}
+
 function getCallStage(transcript: string): CallStage {
   const text = transcript.toLowerCase();
+  const latestCustomerText = getLatestCustomerText(transcript);
+  const latest = latestCustomerText.toLowerCase();
 
   const hasName = /(name is|my name|this is|i'm|i am|customer:)/i.test(transcript) || /\b[A-Z][a-z]+\s+[A-Z][a-z]+\b/.test(transcript);
   const hasAddress = /\b\d{2,6}\s+[a-z0-9 .'-]+\s+(street|st|drive|dr|road|rd|lane|ln|court|ct|avenue|ave|way|circle|cir|place|pl|boulevard|blvd)\b/i.test(transcript);
-  const hasPhotos = /(photo|photos|picture|pictures|video|screenshot|sent)/i.test(text);
-  const hasTimeline = /(today|tomorrow|this week|next week|asap|soon|urgent|deadline|when|timing|schedule)/i.test(text);
-  const hasAccess = /(gate|pet|dog|access|fence|locked|parking|backyard|front yard)/i.test(text);
+  const hasPhotos = /(photo|photos|picture|pictures|video|screenshot|sent)/i.test(text) && !/(can't send|cannot send|can not send|unable to send|no photo|no photos|won't send|dont have photo|don't have photo)/i.test(latest);
+  const customerCannotSendPhotos = /(can't send|cannot send|can not send|unable to send|no photo|no photos|won't send|dont have photo|don't have photo|come to my house|visit|come out|look at it in person)/i.test(latest);
+  const hasTimeline = /(today|tomorrow|this week|next week|asap|soon|urgent|deadline|when|timing|schedule|flexible|no rush)/i.test(text);
+  const hasAccess = /(gate|pet|dog|access|fence|locked|parking|backyard|front yard|no gate|no pets|no dog)/i.test(text);
+  const wantsEstimate = /(estimate|quote|how much|cost|price|pricing)/i.test(text);
+  const projectWork = /(cleanup|clean up|mulch|weeding|weed|trimming|bush|plant|bed|project|landscape)/i.test(text);
+  const callRisk = /(call me|call back|bradley|complaint|upset|frustrated|damage|not finished|wrong|refund|discount|credit)/i.test(text);
+  const missingBasics = [
+    !hasName ? 'full name' : '',
+    !hasAddress ? 'property address' : '',
+    !hasTimeline ? 'timeline' : '',
+    !hasAccess ? 'access notes' : ''
+  ].filter(Boolean);
 
   if (!text.trim()) {
     return {
@@ -222,23 +248,53 @@ function getCallStage(transcript: string): CallStage {
     };
   }
 
-  if (/(estimate|quote|how much|cost|price|pricing)/i.test(text)) {
-    if (!hasAddress || !hasPhotos) {
-      return {
-        label: 'Estimate Intake',
-        step: 'Collect estimate basics',
-        say: 'I can help gather the details for an estimate. The best first step is to collect the property address and photos or a short video of the area.',
-        ask: [
-          !hasName ? 'Can I get your full name?' : '',
-          !hasAddress ? 'What is the property address?' : '',
-          !hasPhotos ? 'Can you send photos or a short video of the area?' : '',
-          !hasTimeline ? 'Is there a specific timeline or deadline you are hoping for?' : '',
-          !hasAccess ? 'Are there any gate, pet, access, or parking notes we should know about?' : ''
-        ].filter(Boolean).join('\n'),
-        endCall: 'End the call after you have name, address, photos/video request, timeline, and access notes. Then tell them you will review internally and follow up.'
-      };
-    }
+  // This must come before generic estimate/photo logic so the coach responds to the latest customer answer.
+  if ((wantsEstimate || projectWork) && customerCannotSendPhotos) {
+    const stillMissing = [
+      !hasName ? 'Can I get your full name?' : '',
+      !hasAddress ? 'What is the property address?' : '',
+      !hasTimeline ? 'Is there a specific timeline or deadline you are hoping for?' : '',
+      !hasAccess ? 'Are there any gate, pet, access, or parking notes we should know about?' : ''
+    ].filter(Boolean).join('\n');
 
+    return {
+      label: 'Photo Issue',
+      step: 'Customer cannot send photos',
+      say: 'No problem. Photos usually help us review the scope faster, but I can still collect the details and review the best next step internally.',
+      ask: stillMissing || 'Can you describe the area as clearly as possible, including the size, what needs to be done, and whether there are any access issues?',
+      endCall: 'End after collecting the remaining details and tell them you will review internally. If a visit or pricing decision is needed, escalate to Bradley instead of promising a visit.'
+    };
+  }
+
+  if (callRisk) {
+    return {
+      label: 'Escalate',
+      step: 'Protect the call',
+      say: 'I understand. I’ll make a clear note of this and have it reviewed internally so we handle it correctly.',
+      ask: 'Can you tell me exactly what happened, the best call-back number, and any photo or detail that would help Bradley review it?',
+      endCall: 'End after you have the issue summary, call-back number, and any evidence/photos. Do not promise Bradley will call at a specific time.'
+    };
+  }
+
+  if (wantsEstimate && (!hasAddress || !hasPhotos || missingBasics.length)) {
+    const questions = [
+      !hasName ? 'Can I get your full name?' : '',
+      !hasAddress ? 'What is the property address?' : '',
+      !hasPhotos ? 'Can you send photos or a short video of the area?' : '',
+      !hasTimeline ? 'Is there a specific timeline or deadline you are hoping for?' : '',
+      !hasAccess ? 'Are there any gate, pet, access, or parking notes we should know about?' : ''
+    ].filter(Boolean).join('\n');
+
+    return {
+      label: 'Estimate Intake',
+      step: 'Collect only missing estimate details',
+      say: 'Got it. I’ll collect the remaining details so we can review the estimate request properly.',
+      ask: questions || 'I have the main details. Is there anything unusual about the property access, pets, gates, or timing?',
+      endCall: 'End the call only after the missing details are collected or you have explained that you will review internally.'
+    };
+  }
+
+  if (wantsEstimate) {
     return {
       label: 'Estimate Ready',
       step: 'Confirm and close the call',
@@ -248,18 +304,20 @@ function getCallStage(transcript: string): CallStage {
     };
   }
 
-  if (/(cleanup|clean up|mulch|weeding|weed|trimming|bush|plant|bed|project)/i.test(text)) {
+  if (projectWork) {
+    const questions = [
+      !hasAddress ? 'What is the property address?' : '',
+      !hasPhotos ? 'Can you send photos or a short video of the area?' : '',
+      !hasTimeline ? 'Do you have a specific deadline or are you flexible on timing?' : '',
+      !hasAccess ? 'Any gate, pet, or access notes?' : ''
+    ].filter(Boolean).join('\n');
+
     return {
       label: 'Project Work',
       step: 'Set project-work expectation',
-      say: 'For cleanup or project work, I can gather the details and photos first. We are currently booked out for project work, so I want to make sure we set the right expectation before promising timing.',
-      ask: [
-        !hasAddress ? 'What is the property address?' : '',
-        !hasPhotos ? 'Can you send photos or a short video of the area?' : '',
-        !hasTimeline ? 'Do you have a specific deadline or are you flexible on timing?' : '',
-        !hasAccess ? 'Any gate, pet, or access notes?' : ''
-      ].filter(Boolean).join('\n') || 'Confirm if they are okay with reconnecting later or if timing is urgent.',
-      endCall: 'End after setting expectation and collecting photos/address. Escalate only if timing is urgent, customer is upset, scope/pricing is unusual, or you are not sure.'
+      say: 'For cleanup or project work, I can gather the remaining details first and set the right expectation before promising timing.',
+      ask: questions || 'Confirm if they are okay with reconnecting later or if timing is urgent.',
+      endCall: 'End after setting expectation and collecting the missing details. Escalate if timing is urgent, customer is upset, scope/pricing is unusual, or you are not sure.'
     };
   }
 
@@ -274,16 +332,6 @@ function getCallStage(transcript: string): CallStage {
         !hasTimeline ? 'When would you like service to start?' : ''
       ].filter(Boolean).join('\n'),
       endCall: 'End after confirming service type, address, and timing. If pricing or scope is unclear, escalate to Bradley.'
-    };
-  }
-
-  if (/(call me|call back|bradley|complaint|upset|frustrated|damage|not finished|wrong|refund|discount|credit)/i.test(text)) {
-    return {
-      label: 'Escalate',
-      step: 'Protect the call',
-      say: 'I understand. I’ll make a clear note of this and have it reviewed internally so we handle it correctly.',
-      ask: 'Can you tell me exactly what happened, the best call-back number, and any photo or detail that would help Bradley review it?',
-      endCall: 'End after you have the issue summary, call-back number, and any evidence/photos. Do not promise Bradley will call at a specific time.'
     };
   }
 
