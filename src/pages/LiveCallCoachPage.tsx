@@ -26,6 +26,7 @@ import { DEFAULT_TOPICS } from '@/lib/constants';
 import { listAIMemories } from '@/services/aiMemory';
 import { listEscalations } from '@/services/escalations';
 import { getLiveCallCoaching, transcribeCallAudio, type LiveCoachResult } from '@/services/liveCallCoach';
+import { getLiveTurnCoach, type LiveTurnCoachResult } from '@/services/liveTurnCoach';
 import type { AIMemory, Escalation } from '@/types';
 
 type SpeechRecognitionEventLike = Event & {
@@ -225,7 +226,8 @@ function getCallStage(transcript: string): CallStage {
   const hasName = /(name is|my name|this is|i'm|i am|customer:)/i.test(transcript) || /\b[A-Z][a-z]+\s+[A-Z][a-z]+\b/.test(transcript);
   const hasAddress = /\b\d{2,6}\s+[a-z0-9 .'-]+\s+(street|st|drive|dr|road|rd|lane|ln|court|ct|avenue|ave|way|circle|cir|place|pl|boulevard|blvd)\b/i.test(transcript);
   const hasPhotos = /(photo|photos|picture|pictures|video|screenshot|sent)/i.test(text) && !/(can't send|cannot send|can not send|unable to send|no photo|no photos|won't send|dont have photo|don't have photo)/i.test(latest);
-  const customerCannotSendPhotos = /(can't send|cannot send|can not send|unable to send|no photo|no photos|won't send|dont have photo|don't have photo|come to my house|visit|come out|look at it in person)/i.test(latest);
+  const latestIsVisitRequest = /(come here|come to my house|come over|come out|visit|look at it in person|see it in person|site visit|in person)/i.test(latest);
+  const customerCannotSendPhotos = /(can't send|cannot send|can not send|unable to send|no photo|no photos|won't send|dont have photo|don't have photo)/i.test(latest);
   const hasTimeline = /(today|tomorrow|this week|next week|asap|soon|urgent|deadline|when|timing|schedule|flexible|no rush)/i.test(text);
   const hasAccess = /(gate|pet|dog|access|fence|locked|parking|backyard|front yard|no gate|no pets|no dog)/i.test(text);
   const wantsEstimate = /(estimate|quote|how much|cost|price|pricing)/i.test(text);
@@ -249,10 +251,19 @@ function getCallStage(transcript: string): CallStage {
   }
 
   // This must come before generic estimate/photo logic so the coach responds to the latest customer answer.
+  if ((wantsEstimate || projectWork) && latestIsVisitRequest) {
+    return {
+      label: 'Visit Request',
+      step: 'Do not promise a visit',
+      say: 'I understand. I can note that you prefer someone to look at it in person, but I cannot promise a visit or timing on this call. I’ll document the request and review the best next step internally.',
+      ask: 'Can you briefly describe the area and what needs to be done so I can include that in the notes?',
+      endCall: 'Yes, you can end after confirming you will document the visit request and review internally. Escalate to Bradley if a site visit, timing, or pricing decision is needed.'
+    };
+  }
+
   if ((wantsEstimate || projectWork) && customerCannotSendPhotos) {
     const stillMissing = [
-      !hasName ? 'Can I get your full name?' : '',
-      !hasAddress ? 'What is the property address?' : '',
+      !hasName ? 'Can I get your full name for the notes?' : '',
       !hasTimeline ? 'Is there a specific timeline or deadline you are hoping for?' : '',
       !hasAccess ? 'Are there any gate, pet, access, or parking notes we should know about?' : ''
     ].filter(Boolean).join('\n');
@@ -381,6 +392,8 @@ export function LiveCallCoachPage() {
   const [coaching, setCoaching] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [coach, setCoach] = useState<LiveCoachResult | null>(null);
+  const [turnCoach, setTurnCoach] = useState<LiveTurnCoachResult | null>(null);
+  const [turnCoaching, setTurnCoaching] = useState(false);
   const [history, setHistory] = useState<Escalation[]>([]);
   const [memories, setMemories] = useState<AIMemory[]>([]);
   const [contextLoading, setContextLoading] = useState(true);
@@ -398,6 +411,7 @@ export function LiveCallCoachPage() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const transcriptionQueueRef = useRef<Promise<void>>(Promise.resolve());
   const lastAnalyzedRef = useRef('');
+  const lastTurnCoachedRef = useRef('');
   const transcriptBoxRef = useRef<HTMLDivElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioMeterFrameRef = useRef<number | null>(null);
@@ -462,7 +476,7 @@ export function LiveCallCoachPage() {
         latestAudioLevelRef.current = normalized;
         setAudioLevel(normalized);
 
-        if (normalized >= 6) {
+        if (normalized >= 3) {
           quietFrameCountRef.current = 0;
           latestAudioHealthRef.current = 'hearing';
           setAudioHealth('hearing');
@@ -505,6 +519,35 @@ export function LiveCallCoachPage() {
   const instantSuggestion = useMemo(() => getInstantSuggestion(transcript), [transcript]);
   const memorySuggestion = useMemo(() => getMemoryBasedSuggestion(transcript, memories), [transcript, memories]);
   const callStage = useMemo(() => getCallStage(transcript), [transcript]);
+  const latestCustomerLine = useMemo(() => getLatestCustomerText(transcript), [transcript]);
+
+  const requestTurnCoaching = async (force = false) => {
+    const cleanTranscript = transcript.trim();
+    const latestLine = getLatestCustomerText(cleanTranscript);
+    if (!cleanTranscript || !latestLine) return;
+    if (!force && latestLine === lastTurnCoachedRef.current) return;
+
+    lastTurnCoachedRef.current = latestLine;
+    setTurnCoaching(true);
+    setError('');
+
+    try {
+      const nextTurnCoach = await getLiveTurnCoach({
+        transcript: cleanTranscript,
+        latestCustomerLine: latestLine,
+        source,
+        topic,
+        memories,
+        history
+      });
+      setTurnCoach(nextTurnCoach);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Live turn coach failed.');
+    } finally {
+      setTurnCoaching(false);
+    }
+  };
+
 
   useEffect(() => {
     let mounted = true;
@@ -579,6 +622,17 @@ export function LiveCallCoachPage() {
     const timer = window.setTimeout(() => {
       void requestCoaching(false);
     }, 1500);
+
+    return () => window.clearTimeout(timer);
+  }, [transcript, autoCoach, listening, contextLoading]);
+
+  useEffect(() => {
+    if (!autoCoach || contextLoading) return;
+    if (transcript.trim().length < 8) return;
+
+    const timer = window.setTimeout(() => {
+      void requestTurnCoaching(false);
+    }, listening ? 900 : 250);
 
     return () => window.clearTimeout(timer);
   }, [transcript, autoCoach, listening, contextLoading]);
@@ -756,7 +810,7 @@ export function LiveCallCoachPage() {
       recorder.ondataavailable = (event) => {
         if (!event.data || event.data.size < 5000) return;
 
-        if (latestAudioHealthRef.current !== 'hearing' && latestAudioLevelRef.current < 6) {
+        if (latestAudioHealthRef.current !== 'hearing' && latestAudioLevelRef.current < 3) {
           setTranscribing(false);
           setAudioHelp('Audio chunk skipped because no clear call audio was detected. Confirm Share tab audio is checked and the selected Quo/OpenPhone tab is playing sound.');
           return;
@@ -781,7 +835,7 @@ export function LiveCallCoachPage() {
       mediaRecorderRef.current = recorder;
       setListeningMode('tab-audio');
 
-      recorder.start(20000);
+      recorder.start(10000);
       setCopied('Tab audio capture started. Keep the selected call tab open while talking.');
       window.setTimeout(() => setCopied(''), 2200);
     } catch (err) {
@@ -803,7 +857,10 @@ export function LiveCallCoachPage() {
 
     appendTranscript(`Customer: ${clean}`);
     setManualContext('');
-    window.setTimeout(() => void requestCoaching(true), 250);
+    window.setTimeout(() => {
+      void requestTurnCoaching(true);
+      void requestCoaching(true);
+    }, 250);
   };
 
   const clearCall = () => {
@@ -812,9 +869,11 @@ export function LiveCallCoachPage() {
     setInterimTranscript('');
     setManualContext('');
     setCoach(null);
+    setTurnCoach(null);
     setError('');
     setCopied('');
     lastAnalyzedRef.current = '';
+    lastTurnCoachedRef.current = '';
     transcribeErrorCountRef.current = 0;
   };
 
@@ -854,7 +913,7 @@ export function LiveCallCoachPage() {
               </p>
             </div>
             <Button type="button" onClick={startTabAudioListening} disabled={listening} leftIcon={<MonitorUp className="h-4 w-4" />}>
-              Start Live Coach
+              Start Live Answer Coach
             </Button>
           </div>
         </CardContent>
@@ -920,7 +979,7 @@ export function LiveCallCoachPage() {
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
                   <CardTitle className="flex items-center gap-2"><PhoneCall className="h-5 w-5 text-ga-700" /> Live input</CardTitle>
-                  <CardDescription>Start customer audio or type what the customer just said.</CardDescription>
+                  <CardDescription>Best: Start Live Coach and share the Quo/OpenPhone tab audio. Backup: type only the latest thing customer said, then Add + Coach.</CardDescription>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {listening ? (
@@ -936,7 +995,7 @@ export function LiveCallCoachPage() {
                   <Button variant={autoCoach ? 'warning' : 'secondary'} onClick={() => setAutoCoach((current) => !current)} leftIcon={<Radio className="h-4 w-4" />}>
                     {autoCoach ? 'Auto Coach On' : 'Auto Coach Off'}
                   </Button>
-                  <Button variant="secondary" onClick={() => requestCoaching(true)} disabled={coaching || contextLoading} leftIcon={coaching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}>
+                  <Button variant="secondary" onClick={() => { void requestTurnCoaching(true); void requestCoaching(true); }} disabled={coaching || turnCoaching || contextLoading} leftIcon={coaching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}>
                     Coach Now
                   </Button>
                 </div>
@@ -1012,30 +1071,37 @@ export function LiveCallCoachPage() {
           <Card className="overflow-hidden border-ga-200">
             <CardHeader className="bg-ga-950 text-white">
               <CardTitle className="flex items-center gap-2 text-white"><Sparkles className="h-5 w-5" /> Live Coach</CardTitle>
-              <CardDescription className="text-ga-100">Follow these steps while talking.</CardDescription>
+              <CardDescription className="text-ga-100">Automatic reply guidance while customer is talking.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                 <div className="mb-2 flex flex-wrap items-center gap-2">
-                  <Badge tone={decisionTone(callStage.label === 'Escalate' ? 'Needs Bradley' : instantSuggestion.decision)}>{callStage.label}</Badge>
-                  <Badge tone="green">Step-by-step</Badge>
+                  <Badge tone={decisionTone(turnCoach?.decision || (callStage.label === 'Escalate' ? 'Needs Bradley' : instantSuggestion.decision))}>
+                    {turnCoach?.stage || callStage.label}
+                  </Badge>
+                  <Badge tone="green">{turnCoaching ? 'Updating...' : 'Live answer'}</Badge>
                 </div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Current step</p>
-                <p className="mt-1 text-sm font-semibold leading-6 text-emerald-950">{callStage.step}</p>
 
-                <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-emerald-700">Say this now</p>
-                <p className="mt-1 whitespace-pre-wrap text-base font-bold leading-7 text-emerald-950">{callStage.say}</p>
+                {latestCustomerLine ? (
+                  <div className="mb-3 rounded-xl border border-emerald-200 bg-white/70 px-3 py-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Latest customer said</p>
+                    <p className="mt-1 text-sm leading-5 text-slate-800">{latestCustomerLine}</p>
+                  </div>
+                ) : null}
+
+                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Say this now</p>
+                <p className="mt-1 whitespace-pre-wrap text-base font-bold leading-7 text-emerald-950">{turnCoach?.sayThisNow || callStage.say}</p>
 
                 <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-emerald-700">Ask next</p>
-                <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-emerald-900">{callStage.ask}</p>
+                <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-emerald-900">{turnCoach?.askNext || callStage.ask}</p>
 
                 <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-blue-700">Can I end the call?</p>
-                <p className="mt-1 text-sm leading-6 text-blue-900">{callStage.endCall}</p>
+                <p className="mt-1 text-sm leading-6 text-blue-900">{turnCoach?.canEndCall || callStage.endCall}</p>
 
                 <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-red-700">Careful</p>
-                <p className="mt-1 text-sm leading-6 text-red-800">{instantSuggestion.warning}</p>
+                <p className="mt-1 text-sm leading-6 text-red-800">{turnCoach?.warning || instantSuggestion.warning}</p>
 
-                <Button className="mt-3" size="sm" variant="secondary" onClick={() => copy(callStage.say, 'Current line copied.')} leftIcon={<Clipboard className="h-4 w-4" />}>
+                <Button className="mt-3" size="sm" variant="secondary" onClick={() => copy(turnCoach?.sayThisNow || callStage.say, 'Current line copied.')} leftIcon={<Clipboard className="h-4 w-4" />}>
                   Copy line
                 </Button>
               </div>
