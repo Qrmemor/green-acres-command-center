@@ -520,6 +520,7 @@ export function LiveCallCoachPage() {
   const memorySuggestion = useMemo(() => getMemoryBasedSuggestion(transcript, memories), [transcript, memories]);
   const callStage = useMemo(() => getCallStage(transcript), [transcript]);
   const latestCustomerLine = useMemo(() => getLatestCustomerText(transcript), [transcript]);
+  const hasLiveCustomerLine = latestCustomerLine.trim().length > 0;
 
   const requestTurnCoaching = async (force = false) => {
     const cleanTranscript = transcript.trim();
@@ -808,12 +809,10 @@ export function LiveCallCoachPage() {
       const recorder = new MediaRecorder(audioStream, { mimeType });
 
       recorder.ondataavailable = (event) => {
-        if (!event.data || event.data.size < 5000) return;
+        if (!event.data || event.data.size < 2000) return;
 
         if (latestAudioHealthRef.current !== 'hearing' && latestAudioLevelRef.current < 3) {
-          setTranscribing(false);
-          setAudioHelp('Audio chunk skipped because no clear call audio was detected. Confirm Share tab audio is checked and the selected Quo/OpenPhone tab is playing sound.');
-          return;
+          setAudioHelp('Audio is weak, but I am still trying to transcribe it. If no transcript appears, re-share the Messenger/Quo tab and make sure Share tab audio is checked.');
         }
 
         enqueueTabAudioTranscription(event.data);
@@ -835,7 +834,7 @@ export function LiveCallCoachPage() {
       mediaRecorderRef.current = recorder;
       setListeningMode('tab-audio');
 
-      recorder.start(10000);
+      recorder.start(6000);
       setCopied('Tab audio capture started. Keep the selected call tab open while talking.');
       window.setTimeout(() => setCopied(''), 2200);
     } catch (err) {
@@ -851,7 +850,7 @@ export function LiveCallCoachPage() {
   const addCustomerSaidAndCoach = () => {
     const clean = manualContext.trim();
     if (!clean) {
-      setError('Type customer said first.');
+      setError('Type latest customer line first.');
       return;
     }
 
@@ -890,7 +889,7 @@ export function LiveCallCoachPage() {
           <p className="page-kicker">AI COMMAND CENTER</p>
           <h1 className="page-title">Live Call Coach</h1>
           <p className="page-subtitle">
-            Simple live call coach. It guides Carl step by step from opening the call, collecting details, knowing what to say next, and when to end or escalate.
+            Simple live answer coach. It listens to the customer, then shows the exact line Carl can read next. If audio does not transcribe, type the latest customer line and click Add + Coach.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
@@ -913,7 +912,7 @@ export function LiveCallCoachPage() {
               </p>
             </div>
             <Button type="button" onClick={startTabAudioListening} disabled={listening} leftIcon={<MonitorUp className="h-4 w-4" />}>
-              Start Live Answer Coach
+              Start Live Answer
             </Button>
           </div>
         </CardContent>
@@ -922,7 +921,7 @@ export function LiveCallCoachPage() {
       <div className="mb-5 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
         <p className="font-semibold">How to connect the call audio</p>
         <p className="mt-1">
-          Click <span className="font-semibold">Start Live Coach</span>, choose the Quo/OpenPhone call tab, then check <span className="font-semibold">Share tab audio</span>. If it fails, type what the customer said and click Add + Coach.
+          Click <span className="font-semibold">Start Call Audio</span>, choose the Quo/OpenPhone call tab, then check <span className="font-semibold">Share tab audio</span>. If it fails, type what the customer said and click Add + Coach.
         </p>
       </div>
 
@@ -979,7 +978,7 @@ export function LiveCallCoachPage() {
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
                   <CardTitle className="flex items-center gap-2"><PhoneCall className="h-5 w-5 text-ga-700" /> Live input</CardTitle>
-                  <CardDescription>Best: Start Live Coach and share the Quo/OpenPhone tab audio. Backup: type only the latest thing customer said, then Add + Coach.</CardDescription>
+                  <CardDescription>Best: Start Call Audio and share the Quo/OpenPhone tab audio. Backup: type only the latest thing customer said, then Add + Coach.</CardDescription>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {listening ? (
@@ -989,7 +988,7 @@ export function LiveCallCoachPage() {
                   ) : (
                     <>
                       <Button onClick={startMicrophoneListening} leftIcon={<Mic className="h-4 w-4" />}>Mic / Speaker</Button>
-                      <Button variant="secondary" onClick={startTabAudioListening} leftIcon={<MonitorUp className="h-4 w-4" />}>Start Live Coach</Button>
+                      <Button variant="secondary" onClick={startTabAudioListening} leftIcon={<MonitorUp className="h-4 w-4" />}>Start Call Audio</Button>
                     </>
                   )}
                   <Button variant={autoCoach ? 'warning' : 'secondary'} onClick={() => setAutoCoach((current) => !current)} leftIcon={<Radio className="h-4 w-4" />}>
@@ -1044,7 +1043,7 @@ export function LiveCallCoachPage() {
             <CardContent className="space-y-4">
               <div>
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Label htmlFor="manual-context">Type customer said</Label>
+                  <Label htmlFor="manual-context">Type latest customer line</Label>
                   <Button type="button" size="sm" variant="secondary" onClick={addCustomerSaidAndCoach} leftIcon={<Sparkles className="h-4 w-4" />}>
                     Add + Coach
                   </Button>
@@ -1053,13 +1052,13 @@ export function LiveCallCoachPage() {
                   id="manual-context"
                   value={manualContext}
                   onChange={(event) => setManualContext(event.target.value)}
-                  placeholder="Example: I want an estimate for cleanup and mulch."
+                  placeholder="Example: Customer said, I cannot send photos, can someone come here instead?"
                   className="min-h-[90px]"
                 />
               </div>
 
               <div ref={transcriptBoxRef} className="min-h-[320px] max-h-[420px] overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-800">
-                {finalTranscript ? <span className="whitespace-pre-wrap">{finalTranscript}</span> : <span className="text-slate-400">Transcript appears here. The coach uses this to guide the call step by step.</span>}
+                {finalTranscript ? <span className="whitespace-pre-wrap">{finalTranscript}</span> : <span className="text-slate-400">Transcript appears here. Every new customer line should update the Live Answer on the right.</span>}
                 {interimTranscript ? <span className="whitespace-pre-wrap text-slate-500"> {interimTranscript}</span> : null}
                 {transcribing ? <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-blue-600">Transcribing tab audio...</p> : null}
               </div>
@@ -1071,15 +1070,15 @@ export function LiveCallCoachPage() {
           <Card className="overflow-hidden border-ga-200">
             <CardHeader className="bg-ga-950 text-white">
               <CardTitle className="flex items-center gap-2 text-white"><Sparkles className="h-5 w-5" /> Live Coach</CardTitle>
-              <CardDescription className="text-ga-100">Automatic reply guidance while customer is talking.</CardDescription>
+              <CardDescription className="text-ga-100">Shows the next line to say based on the latest customer message.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                 <div className="mb-2 flex flex-wrap items-center gap-2">
                   <Badge tone={decisionTone(turnCoach?.decision || (callStage.label === 'Escalate' ? 'Needs Bradley' : instantSuggestion.decision))}>
-                    {turnCoach?.stage || callStage.label}
+                    {hasLiveCustomerLine ? (turnCoach?.stage || callStage.label) : 'Waiting for customer'}
                   </Badge>
-                  <Badge tone="green">{turnCoaching ? 'Updating...' : 'Live answer'}</Badge>
+                  <Badge tone="green">{turnCoaching ? 'Updating...' : hasLiveCustomerLine ? 'Live answer' : 'No transcript yet'}</Badge>
                 </div>
 
                 {latestCustomerLine ? (
@@ -1090,18 +1089,18 @@ export function LiveCallCoachPage() {
                 ) : null}
 
                 <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Say this now</p>
-                <p className="mt-1 whitespace-pre-wrap text-base font-bold leading-7 text-emerald-950">{turnCoach?.sayThisNow || callStage.say}</p>
+                <p className="mt-1 whitespace-pre-wrap text-base font-bold leading-7 text-emerald-950">{hasLiveCustomerLine ? (turnCoach?.sayThisNow || callStage.say) : 'Waiting for the customer audio or typed customer line. If this stays here, the system is not receiving/transcribing the call yet.'}</p>
 
                 <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-emerald-700">Ask next</p>
-                <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-emerald-900">{turnCoach?.askNext || callStage.ask}</p>
+                <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-emerald-900">{hasLiveCustomerLine ? (turnCoach?.askNext || callStage.ask) : 'Use Start Call Audio and select the Messenger/Quo tab with Share tab audio checked. Or type the latest thing the customer said and click Add + Coach.'}</p>
 
                 <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-blue-700">Can I end the call?</p>
-                <p className="mt-1 text-sm leading-6 text-blue-900">{turnCoach?.canEndCall || callStage.endCall}</p>
+                <p className="mt-1 text-sm leading-6 text-blue-900">{hasLiveCustomerLine ? (turnCoach?.canEndCall || callStage.endCall) : 'Not yet. Wait until the coach sees the customer message or type it manually.'}</p>
 
                 <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-red-700">Careful</p>
-                <p className="mt-1 text-sm leading-6 text-red-800">{turnCoach?.warning || instantSuggestion.warning}</p>
+                <p className="mt-1 text-sm leading-6 text-red-800">{hasLiveCustomerLine ? (turnCoach?.warning || instantSuggestion.warning) : 'Do not rely on the coach until a transcript appears or you type the customer line.'}</p>
 
-                <Button className="mt-3" size="sm" variant="secondary" onClick={() => copy(turnCoach?.sayThisNow || callStage.say, 'Current line copied.')} leftIcon={<Clipboard className="h-4 w-4" />}>
+                <Button className="mt-3" size="sm" variant="secondary" onClick={() => copy(hasLiveCustomerLine ? (turnCoach?.sayThisNow || callStage.say) : '', 'Current line copied.')} leftIcon={<Clipboard className="h-4 w-4" />}>
                   Copy line
                 </Button>
               </div>
