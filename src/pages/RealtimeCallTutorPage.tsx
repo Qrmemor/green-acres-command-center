@@ -94,6 +94,7 @@ export function RealtimeCallTutorPage() {
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const displayStreamRef = useRef<MediaStream | null>(null);
+  const audioOnlyStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioMeterFrameRef = useRef<number | null>(null);
   const lastHeardRef = useRef('');
@@ -344,6 +345,11 @@ export function RealtimeCallTutorPage() {
       displayStreamRef.current = null;
     }
 
+    if (audioOnlyStreamRef.current) {
+      audioOnlyStreamRef.current.getTracks().forEach((track) => track.stop());
+      audioOnlyStreamRef.current = null;
+    }
+
     mediaRecorderRef.current = null;
     stopAudioMeter();
     setTabAudioActive(false);
@@ -372,17 +378,27 @@ export function RealtimeCallTutorPage() {
         throw new Error('No tab audio was shared. Please select the Quo/OpenPhone tab and check Share tab audio.');
       }
 
+      const audioOnlyStream = new MediaStream(audioTracks);
       displayStreamRef.current = stream;
+      audioOnlyStreamRef.current = audioOnlyStream;
       setTabAudioActive(true);
       setAudioHelp('Tab audio connected. When the customer speaks, the system will auto-transcribe and generate a reply.');
-      startAudioMeter(stream);
+      startAudioMeter(audioOnlyStream);
 
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
-      const recorder = new MediaRecorder(stream, { mimeType });
+      const supportedMimeType = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4'
+      ].find((type) => MediaRecorder.isTypeSupported(type));
+
+      const recorder = supportedMimeType
+        ? new MediaRecorder(audioOnlyStream, { mimeType: supportedMimeType })
+        : new MediaRecorder(audioOnlyStream);
+
       mediaRecorderRef.current = recorder;
 
       recorder.ondataavailable = async (event) => {
-        if (!event.data || event.data.size < 8000) return;
+        if (!event.data || event.data.size < 1500) return;
         try {
           const text = await transcribeTutorAudio(event.data);
           if (text) {
@@ -402,6 +418,10 @@ export function RealtimeCallTutorPage() {
           displayStreamRef.current.getTracks().forEach((track) => track.stop());
           displayStreamRef.current = null;
         }
+        if (audioOnlyStreamRef.current) {
+          audioOnlyStreamRef.current.getTracks().forEach((track) => track.stop());
+          audioOnlyStreamRef.current = null;
+        }
         stopAudioMeter();
         setTabAudioActive(false);
       };
@@ -412,10 +432,14 @@ export function RealtimeCallTutorPage() {
         };
       });
 
-      recorder.start(5000);
+      try {
+        recorder.start(6000);
+      } catch (startError) {
+        throw new Error(startError instanceof Error ? startError.message : 'MediaRecorder could not start.');
+      }
     } catch (err) {
       stopTabAudioCapture();
-      setError(err instanceof Error ? err.message : 'Could not start tab audio capture.');
+      setError(err instanceof Error ? err.message : 'Could not start tab audio capture. Try Chrome or Edge, select a browser tab, and check Share tab audio.');
     } finally {
       setAudioLoading(false);
     }
@@ -484,7 +508,7 @@ export function RealtimeCallTutorPage() {
               <div className="h-full rounded-full bg-emerald-500 transition-all duration-200" style={{ width: `${Math.max(4, audioLevel)}%` }} />
             </div>
             <p className="mt-2 text-sm leading-6 text-slate-600">{audioHelp}</p>
-            <p className="mt-2 text-xs leading-5 text-slate-500">When the browser asks what to share, choose the Quo/OpenPhone tab and check <span className="font-semibold">Share tab audio</span>.</p>
+            <p className="mt-2 text-xs leading-5 text-slate-500">When the browser asks what to share, choose the Quo/OpenPhone tab or Messenger tab, check <span className="font-semibold">Share tab audio</span>, then click Share. Avoid sharing the entire screen if tab audio is available.</p>
           </div>
         </div>
 
