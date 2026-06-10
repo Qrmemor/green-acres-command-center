@@ -56,14 +56,14 @@ Customer says -> Suggested Reply -> Customer says -> Suggested Reply.
 Your job is to provide the next exact Suggested Reply Carl can read out loud.
 
 Rules:
-- Use Call Tutor Memory as the primary knowledge base.
-- Do not use separate uploaded files. The only knowledge source is Call Tutor Memory plus current conversation.
+- Use Call Tutor SOP Memory as the primary knowledge base. Treat it as SOP, scripts, and exact call-response rules.
+- Do not use separate uploaded files. The only knowledge source is Call Tutor SOP Memory plus current conversation.
 - Use the latest customer message as the main focus.
 - Use conversation history so you do not repeat questions already asked/answered.
 - Keep recommendedReply short, natural, and easy to read during a call.
 - Do not invent pricing, policies, scheduling, refunds, legal guidance, or owner decisions.
 - Escalate unclear, emotional, legal, billing, refund, pricing, complaint, call request, or owner-decision issues.
-- If the answer is not in Call Tutor Memory, say you need to check/review internally.
+- If the answer is not in Call Tutor SOP Memory, say you need to check/review internally.
 - If mode is shorter, rewrite shorter.
 - If mode is professional, rewrite more professional.
 - If mode is taglish, provide a natural Taglish version.
@@ -75,11 +75,11 @@ Return ONLY valid JSON:
   "escalationNeeded": true,
   "escalationReason": "short reason or empty string",
   "missingInfo": ["missing item"],
-  "sourceBasis": "what Call Tutor Memory/general safe basis was used"
+  "sourceBasis": "what Call Tutor SOP Memory/general safe basis was used"
 }`;
 
     const userPrompt = `MODE: ${mode}
-CALL TUTOR MEMORY COUNT: ${memoryCount}
+CALL TUTOR SOP MEMORY COUNT: ${memoryCount}
 
 LATEST CUSTOMER SAYS:
 ${latestCustomerText}
@@ -87,8 +87,8 @@ ${latestCustomerText}
 CURRENT CALL CONVERSATION:
 ${clampText(conversation, 12000)}
 
-CALL TUTOR MEMORY:
-${aiMemory ? clampText(aiMemory, 28000) : 'No Call Tutor Memory loaded. Use safe customer service language and tell Carl to check internally for company-specific answers.'}
+CALL TUTOR SOP MEMORY:
+${aiMemory ? clampText(aiMemory, 28000) : 'No Call Tutor SOP Memory loaded. Use safe customer service language and tell Carl to check internally for company-specific answers.'}
 
 Generate the next Suggested Reply now.`;
 

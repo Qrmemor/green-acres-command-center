@@ -38,7 +38,7 @@ function fallbackReply(payload: TutorChatPayload): TutorChatReply {
       escalationNeeded: true,
       escalationReason: "Customer is asking for a visit or site review, which should not be promised without owner confirmation.",
       missingInfo: ["area description", "timeline", "access notes"],
-      sourceBasis: payload.memoryCount ? "Used AI Memory where available with safe fallback." : "No AI Memory loaded, used safe fallback."
+      sourceBasis: payload.memoryCount ? "Used Call Tutor SOP Memory where available with safe fallback." : "No Call Tutor SOP Memory loaded, used safe fallback."
     };
   }
 
@@ -48,7 +48,7 @@ function fallbackReply(payload: TutorChatPayload): TutorChatReply {
     escalationNeeded,
     escalationReason: escalationNeeded ? "Possible pricing, billing, complaint, owner decision, or unclear scope." : "",
     missingInfo: ["name", "address", "photos/video if relevant", "timeline"],
-    sourceBasis: payload.memoryCount ? "Used AI Memory where available with safe fallback." : "No AI Memory loaded, used safe fallback."
+    sourceBasis: payload.memoryCount ? "Used Call Tutor SOP Memory where available with safe fallback." : "No Call Tutor SOP Memory loaded, used safe fallback."
   };
 }
 

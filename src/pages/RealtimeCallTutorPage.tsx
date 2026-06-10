@@ -56,7 +56,7 @@ function tutorMemoryText(memories: AIMemory[]) {
       `TITLE: ${memory.title}`,
       `CONFIDENCE: ${memory.confidence}`,
       memory.tags?.length ? `TAGS: ${memory.tags.join(', ')}` : '',
-      `CALL TUTOR MEMORY: ${memory.summary}`
+      `CALL TUTOR SOP MEMORY: ${memory.summary}`
     ].filter(Boolean).join('\n'))
     .join('\n\n---\n\n');
 }
@@ -126,7 +126,7 @@ export function RealtimeCallTutorPage() {
       const data = await listAIMemories({ activeOnly: true, limit: 200 });
       setMemories(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load Call Tutor Memory.');
+      setError(err instanceof Error ? err.message : 'Unable to load Call Tutor SOP Memory.');
     } finally {
       setMemoryLoading(false);
     }
@@ -154,14 +154,14 @@ export function RealtimeCallTutorPage() {
 
     try {
       await createAIMemory({
-        memory_type: 'customer_reply',
+        memory_type: 'sop_rule',
         title,
         summary: [
-          `When customer says / situation: ${situation}`,
-          `Suggested reply Carl should say: ${reply}`,
-          notes ? `Extra rule / note: ${notes}` : ''
+          `SOP trigger / customer situation: ${situation}`,
+          `SOP instructions / exact wording Carl should use: ${reply}`,
+          notes ? `Extra rule / escalation trigger / follow-up note: ${notes}` : ''
         ].filter(Boolean).join('\n\n'),
-        tags: ['call_tutor', 'realtime_call_tutor'],
+        tags: ['call_tutor', 'realtime_call_tutor', 'call_tutor_sop'],
         source_escalation_id: null,
         confidence: 'high',
         is_active: true
@@ -171,11 +171,11 @@ export function RealtimeCallTutorPage() {
       setMemorySituation('');
       setMemoryReply('');
       setMemoryNotes('');
-      setCopied('Call Tutor memory saved.');
+      setCopied('Call Tutor SOP saved.');
       window.setTimeout(() => setCopied(''), 1400);
       await loadMemories();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not save Call Tutor Memory.');
+      setError(err instanceof Error ? err.message : 'Could not save Call Tutor SOP Memory.');
     } finally {
       setSavingMemory(false);
     }
@@ -448,10 +448,10 @@ export function RealtimeCallTutorPage() {
         <div>
           <p className="page-kicker">AI CUSTOMER SERVICE</p>
           <h1 className="page-title">Realtime Call Tutor</h1>
-          <p className="page-subtitle">Customer says → Suggested Reply → Customer says → Suggested Reply. This tab now has its own Call Tutor Memory.</p>
+          <p className="page-subtitle">Customer says → Suggested Reply → Customer says → Suggested Reply. This tab now has its own Call Tutor SOP Memory.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Badge tone="blue">{memoryLoading ? 'Loading memory...' : `${tutorMemories.length} Call Tutor memories`}</Badge>
+          <Badge tone="blue">{memoryLoading ? 'Loading memory...' : `${tutorMemories.length} Call Tutor SOPs`}</Badge>
           <Button variant="secondary" onClick={loadMemories} leftIcon={<RefreshCw className="h-4 w-4" />}>Refresh Memory</Button>
           <Button variant="danger" onClick={newCall} leftIcon={<Trash2 className="h-4 w-4" />}>New Call</Button>
         </div>
@@ -467,7 +467,7 @@ export function RealtimeCallTutorPage() {
               <div className="rounded-2xl bg-ga-50 p-3 text-ga-700"><MessageCircle className="h-6 w-6" /></div>
               <div>
                 <h2 className="text-lg font-bold text-slate-950">Simple call flow</h2>
-                <p className="mt-1 text-sm leading-6 text-slate-600">Type or capture what the customer says. The suggested reply uses only Call Tutor Memory plus this active conversation.</p>
+                <p className="mt-1 text-sm leading-6 text-slate-600">Type or capture what the customer says. The suggested reply uses only Call Tutor SOP Memory plus this active conversation.</p>
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -500,36 +500,36 @@ export function RealtimeCallTutorPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Database className="h-5 w-5 text-ga-700" /> Call Tutor Memory</CardTitle>
-            <CardDescription>Add examples of what Carl should say in specific situations.</CardDescription>
+            <CardTitle className="flex items-center gap-2"><Database className="h-5 w-5 text-ga-700" /> Call Tutor SOP Memory</CardTitle>
+            <CardDescription>Paste SOP rules, scripts, examples, and exact call responses here.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <input
               value={memoryTitle}
               onChange={(event) => setMemoryTitle(event.target.value)}
-              placeholder="Title, example: Customer cannot send photos"
+              placeholder="SOP title, example: New lead estimate intake"
               className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-ga-500 focus:ring-2 focus:ring-ga-500/20"
             />
             <Textarea
               value={memorySituation}
               onChange={(event) => setMemorySituation(event.target.value)}
-              placeholder="When customer says / situation..."
-              className="min-h-[70px]"
+              placeholder="SOP trigger / customer situation..."
+              className="min-h-[95px]"
             />
             <Textarea
               value={memoryReply}
               onChange={(event) => setMemoryReply(event.target.value)}
-              placeholder="Suggested reply Carl should say..."
-              className="min-h-[80px]"
+              placeholder="SOP instructions / exact suggested wording..."
+              className="min-h-[130px]"
             />
             <Textarea
               value={memoryNotes}
               onChange={(event) => setMemoryNotes(event.target.value)}
-              placeholder="Extra rule or note, optional..."
-              className="min-h-[60px]"
+              placeholder="Extra rule, escalation trigger, or follow-up note..."
+              className="min-h-[90px]"
             />
             <Button onClick={saveTutorMemory} disabled={savingMemory} leftIcon={savingMemory ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}>
-              Save Call Tutor Memory
+              Save Call Tutor SOP Memory
             </Button>
           </CardContent>
         </Card>
@@ -639,7 +639,7 @@ export function RealtimeCallTutorPage() {
           </Card>
 
           <Card>
-            <CardHeader><CardTitle>Saved Call Tutor Memories</CardTitle><CardDescription>Only memories tagged for this call tutor are shown.</CardDescription></CardHeader>
+            <CardHeader><CardTitle>Saved Call Tutor SOPs</CardTitle><CardDescription>Only SOP memories tagged for this call tutor are shown.</CardDescription></CardHeader>
             <CardContent className="space-y-3">
               {tutorMemories.length ? tutorMemories.slice(0, 8).map((memory) => (
                 <div key={memory.id} className="rounded-2xl border border-slate-200 bg-white p-3">
@@ -654,7 +654,7 @@ export function RealtimeCallTutorPage() {
                   </div>
                 </div>
               )) : (
-                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">No Call Tutor memories yet. Add examples above.</div>
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">No Call Tutor SOP memories yet. Add SOP rules above.</div>
               )}
             </CardContent>
           </Card>
