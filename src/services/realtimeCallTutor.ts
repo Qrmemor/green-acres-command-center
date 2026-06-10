@@ -82,6 +82,12 @@ export async function transcribeTutorAudio(blob: Blob): Promise<string> {
   });
 
   const data = (await response.json()) as TranscribeResponse;
-  if (!data.ok) throw new Error(data.error || 'Could not transcribe audio.');
+  if (!data.ok) {
+    const message = data.error || 'Could not transcribe audio.';
+    if (/corrupt|unsupported|invalid file|could not be decoded|duration/i.test(message)) {
+      return '';
+    }
+    throw new Error(message);
+  }
   return (data.text || '').trim();
 }

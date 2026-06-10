@@ -98,6 +98,7 @@ export function RealtimeCallTutorPage() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioMeterFrameRef = useRef<number | null>(null);
   const lastHeardRef = useRef('');
+  const segmentTimerRef = useRef<number | null>(null);
   const replyQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const tutorMemories = useMemo(() => memories.filter((memory) => memory.is_active && isTutorMemory(memory)), [memories]);
@@ -332,6 +333,11 @@ export function RealtimeCallTutorPage() {
   };
 
   const stopTabAudioCapture = () => {
+    if (segmentTimerRef.current !== null) {
+      window.clearTimeout(segmentTimerRef.current);
+      segmentTimerRef.current = null;
+    }
+
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try {
         mediaRecorderRef.current.stop();
@@ -387,56 +393,75 @@ export function RealtimeCallTutorPage() {
 
       const supportedMimeType = [
         'audio/webm;codecs=opus',
-        'audio/webm',
-        'audio/mp4'
+        'audio/webm'
       ].find((type) => MediaRecorder.isTypeSupported(type));
 
-      const recorder = supportedMimeType
-        ? new MediaRecorder(audioOnlyStream, { mimeType: supportedMimeType })
-        : new MediaRecorder(audioOnlyStream);
+      const startRecorderSegment = () => {
+        if (!audioOnlyStreamRef.current) return;
+        const tracks = audioOnlyStreamRef.current.getAudioTracks();
+        if (!tracks.length || tracks.every((track) => track.readyState === 'ended')) return;
 
-      mediaRecorderRef.current = recorder;
+        const chunks: Blob[] = [];
+        const recorder = supportedMimeType
+          ? new MediaRecorder(audioOnlyStreamRef.current, { mimeType: supportedMimeType })
+          : new MediaRecorder(audioOnlyStreamRef.current);
 
-      recorder.ondataavailable = async (event) => {
-        if (!event.data || event.data.size < 1500) return;
-        try {
-          const text = await transcribeTutorAudio(event.data);
-          if (text) {
-            pushCustomerLine(text, 'tab-audio');
+        mediaRecorderRef.current = recorder;
+
+        recorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) chunks.push(event.data);
+        };
+
+        recorder.onerror = () => {
+          setAudioHelp('Audio recorder had an issue. I will keep listening and try the next audio segment.');
+        };
+
+        recorder.onstop = () => {
+          const stillActive = Boolean(audioOnlyStreamRef.current?.getAudioTracks().some((track) => track.readyState === 'live'));
+
+          if (chunks.length) {
+            const blob = new Blob(chunks, { type: supportedMimeType || 'audio/webm' });
+            if (blob.size > 2500) {
+              void transcribeTutorAudio(blob)
+                .then((text) => {
+                  if (text) pushCustomerLine(text, 'tab-audio');
+                })
+                .catch(() => {
+                  setAudioHelp('One audio segment could not be read. This can happen with silence or weak audio. I am still listening.');
+                });
+            }
           }
-        } catch (err) {
-          setError(err instanceof Error ? err.message : 'Could not transcribe tab audio.');
+
+          if (stillActive) {
+            segmentTimerRef.current = window.setTimeout(() => {
+              startRecorderSegment();
+            }, 250);
+          } else {
+            mediaRecorderRef.current = null;
+            stopAudioMeter();
+            setTabAudioActive(false);
+          }
+        };
+
+        try {
+          recorder.start();
+          segmentTimerRef.current = window.setTimeout(() => {
+            if (recorder.state === 'recording') {
+              recorder.stop();
+            }
+          }, 8000);
+        } catch {
+          setAudioHelp('Could not start this audio segment. Try re-sharing the call tab and checking Share tab audio.');
         }
       };
 
-      recorder.onerror = () => {
-        setError('Tab audio recorder failed. Stop and start it again.');
-      };
-
-      recorder.onstop = () => {
-        if (displayStreamRef.current) {
-          displayStreamRef.current.getTracks().forEach((track) => track.stop());
-          displayStreamRef.current = null;
-        }
-        if (audioOnlyStreamRef.current) {
-          audioOnlyStreamRef.current.getTracks().forEach((track) => track.stop());
-          audioOnlyStreamRef.current = null;
-        }
-        stopAudioMeter();
-        setTabAudioActive(false);
-      };
-
-      stream.getVideoTracks().forEach((track) => {
+      stream.getTracks().forEach((track) => {
         track.onended = () => {
           stopTabAudioCapture();
         };
       });
 
-      try {
-        recorder.start(6000);
-      } catch (startError) {
-        throw new Error(startError instanceof Error ? startError.message : 'MediaRecorder could not start.');
-      }
+      startRecorderSegment();
     } catch (err) {
       stopTabAudioCapture();
       setError(err instanceof Error ? err.message : 'Could not start tab audio capture. Try Chrome or Edge, select a browser tab, and check Share tab audio.');

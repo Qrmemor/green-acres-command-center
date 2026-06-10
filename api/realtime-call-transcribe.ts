@@ -33,8 +33,10 @@ export default async function handler(req: any, res: any) {
 
     const formData = new FormData();
     const audioArrayBuffer = audioBuffer.buffer.slice(audioBuffer.byteOffset, audioBuffer.byteOffset + audioBuffer.byteLength);
-    const audioBlob = new Blob([audioArrayBuffer], { type: String(contentType) });
-    formData.append('file', audioBlob, 'call-audio.webm');
+    const normalizedContentType = String(contentType).split(';')[0] || 'audio/webm';
+    const extension = normalizedContentType.includes('mp4') ? 'mp4' : normalizedContentType.includes('mpeg') ? 'mp3' : normalizedContentType.includes('wav') ? 'wav' : 'webm';
+    const audioBlob = new Blob([audioArrayBuffer], { type: normalizedContentType });
+    formData.append('file', audioBlob, `call-audio.${extension}`);
     formData.append('model', model);
     formData.append('response_format', 'json');
     formData.append('language', 'en');
@@ -49,7 +51,11 @@ export default async function handler(req: any, res: any) {
 
     const data = await response.json();
     if (!response.ok) {
-      return res.status(200).json({ ok: false, error: data?.error?.message ?? 'OpenAI transcription failed.' });
+      const message = data?.error?.message ?? 'OpenAI transcription failed.';
+      if (/corrupt|unsupported|invalid file|could not be decoded|duration/i.test(message)) {
+        return res.status(200).json({ ok: false, error: 'Audio segment could not be decoded. This usually happens when the chunk is silent, too short, or the browser produced an incomplete audio segment.' });
+      }
+      return res.status(200).json({ ok: false, error: message });
     }
 
     return res.status(200).json({ ok: true, text: typeof data?.text === 'string' ? data.text : '' });
