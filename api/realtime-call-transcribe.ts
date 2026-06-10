@@ -40,6 +40,7 @@ export default async function handler(req: any, res: any) {
     formData.append('model', model);
     formData.append('response_format', 'json');
     formData.append('language', 'en');
+    formData.append('prompt', 'Transcribe only clear English customer service call audio. If the audio is unclear, silent, or not English, return an empty transcription.');
 
     const response = await fetch(OPENAI_TRANSCRIPT_URL, {
       method: 'POST',

@@ -72,6 +72,22 @@ function normalizeText(value: string) {
   return value.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+function isLikelyEnglishCustomerText(value: string) {
+  const clean = value.trim();
+  if (!clean) return false;
+
+  const latinMatches = clean.match(/[a-zA-Z]/g) ?? [];
+  const nonLatinMatches = clean.match(/[^\x00-\x7F]/g) ?? [];
+
+  // Skip Korean/Chinese/Japanese/noise-like hallucinations from weak audio.
+  if (nonLatinMatches.length > 0 && latinMatches.length < 3) return false;
+
+  // Skip very short filler chunks that are usually noise.
+  if (clean.length < 4 && latinMatches.length < 3) return false;
+
+  return true;
+}
+
 function canRecordTabAudio() {
   return typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getDisplayMedia) && typeof MediaRecorder !== 'undefined';
 }
@@ -92,6 +108,7 @@ export function RealtimeCallTutorPage() {
   const [sopContent, setSopContent] = useState('');
   const [savingMemory, setSavingMemory] = useState(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const rowsRef = useRef<ChatRow[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const displayStreamRef = useRef<MediaStream | null>(null);
   const audioOnlyStreamRef = useRef<MediaStream | null>(null);
@@ -110,6 +127,7 @@ export function RealtimeCallTutorPage() {
   }, []);
 
   useEffect(() => {
+    rowsRef.current = rows;
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [rows, loadingReply]);
 
@@ -250,6 +268,11 @@ export function RealtimeCallTutorPage() {
   };
 
   const generateReplyForCustomerLine = async (clean: string, source: 'manual' | 'tab-audio') => {
+    if (!isLikelyEnglishCustomerText(clean)) {
+      setAudioHelp('Skipped a non-English or unclear audio chunk. Waiting for clear English customer speech...');
+      return;
+    }
+
     const customerRow: ChatRow = {
       id: makeId(),
       role: 'customer',
@@ -258,7 +281,10 @@ export function RealtimeCallTutorPage() {
       source
     };
 
-    const nextRows = [...rows, customerRow];
+    const baseRows = rowsRef.current;
+    const nextRows = [...baseRows, customerRow];
+
+    rowsRef.current = nextRows;
     setRows(nextRows);
     setLoadingReply(true);
     setError('');
@@ -273,10 +299,16 @@ export function RealtimeCallTutorPage() {
         memoryCount: tutorMemories.length
       });
 
-      setRows((current) => [
-        ...current,
-        { id: makeId(), role: 'coach', customerText: clean, reply, createdAt: new Date().toISOString() }
-      ]);
+      const coachRow: ChatRow = {
+        id: makeId(),
+        role: 'coach',
+        customerText: clean,
+        reply,
+        createdAt: new Date().toISOString()
+      };
+
+      rowsRef.current = [...rowsRef.current, coachRow];
+      setRows(rowsRef.current);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Realtime tutor failed.');
     } finally {
@@ -292,10 +324,12 @@ export function RealtimeCallTutorPage() {
     if (normalized.length < 3) return;
 
     const last = normalizeText(lastHeardRef.current);
-    if (last && (last === normalized || last.includes(normalized) || normalized.includes(last))) {
+    if (last && last === normalized) {
       return;
     }
 
+    // If a transcript chunk contains the previous one plus new words, keep only the new complete chunk.
+    // This prevents duplicate rows while still allowing the conversation to continue.
     lastHeardRef.current = clean;
 
     replyQueueRef.current = replyQueueRef.current.then(async () => {
@@ -424,7 +458,11 @@ export function RealtimeCallTutorPage() {
             if (blob.size > 2500) {
               void transcribeTutorAudio(blob)
                 .then((text) => {
-                  if (text) pushCustomerLine(text, 'tab-audio');
+                  if (text && isLikelyEnglishCustomerText(text)) {
+                    pushCustomerLine(text, 'tab-audio');
+                  } else if (text) {
+                    setAudioHelp('Skipped unclear/non-English transcription. Waiting for clear English customer speech...');
+                  }
                 })
                 .catch(() => {
                   setAudioHelp('One audio segment could not be read. This can happen with silence or weak audio. I am still listening.');
@@ -471,6 +509,7 @@ export function RealtimeCallTutorPage() {
   };
 
   const newCall = () => {
+    rowsRef.current = [];
     setRows([]);
     setCustomerInput('');
     setCopied('');
