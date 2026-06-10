@@ -89,9 +89,7 @@ export function RealtimeCallTutorPage() {
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
   const [memoryTitle, setMemoryTitle] = useState('');
-  const [memorySituation, setMemorySituation] = useState('');
-  const [memoryReply, setMemoryReply] = useState('');
-  const [memoryNotes, setMemoryNotes] = useState('');
+  const [sopContent, setSopContent] = useState('');
   const [savingMemory, setSavingMemory] = useState(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -140,12 +138,10 @@ export function RealtimeCallTutorPage() {
 
   const saveTutorMemory = async () => {
     const title = memoryTitle.trim();
-    const situation = memorySituation.trim();
-    const reply = memoryReply.trim();
-    const notes = memoryNotes.trim();
+    const sop = sopContent.trim();
 
-    if (!title || !situation || !reply) {
-      setError('Add a title, customer situation, and suggested reply before saving memory.');
+    if (!title || !sop) {
+      setError('Add an SOP title and SOP content before saving.');
       return;
     }
 
@@ -156,11 +152,7 @@ export function RealtimeCallTutorPage() {
       await createAIMemory({
         memory_type: 'sop_rule',
         title,
-        summary: [
-          `SOP trigger / customer situation: ${situation}`,
-          `SOP instructions / exact wording Carl should use: ${reply}`,
-          notes ? `Extra rule / escalation trigger / follow-up note: ${notes}` : ''
-        ].filter(Boolean).join('\n\n'),
+        summary: sop,
         tags: ['call_tutor', 'realtime_call_tutor', 'call_tutor_sop'],
         source_escalation_id: null,
         confidence: 'high',
@@ -168,14 +160,12 @@ export function RealtimeCallTutorPage() {
       });
 
       setMemoryTitle('');
-      setMemorySituation('');
-      setMemoryReply('');
-      setMemoryNotes('');
+      setSopContent('');
       setCopied('Call Tutor SOP saved.');
       window.setTimeout(() => setCopied(''), 1400);
       await loadMemories();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not save Call Tutor SOP Memory.');
+      setError(err instanceof Error ? err.message : 'Could not save Call Tutor SOP.');
     } finally {
       setSavingMemory(false);
     }
@@ -501,7 +491,7 @@ export function RealtimeCallTutorPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2"><Database className="h-5 w-5 text-ga-700" /> Call Tutor SOP Memory</CardTitle>
-            <CardDescription>Paste SOP rules, scripts, examples, and exact call responses here.</CardDescription>
+            <CardDescription>Add one SOP title, then paste the full SOP below.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <input
@@ -511,25 +501,13 @@ export function RealtimeCallTutorPage() {
               className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-ga-500 focus:ring-2 focus:ring-ga-500/20"
             />
             <Textarea
-              value={memorySituation}
-              onChange={(event) => setMemorySituation(event.target.value)}
-              placeholder="SOP trigger / customer situation..."
-              className="min-h-[95px]"
-            />
-            <Textarea
-              value={memoryReply}
-              onChange={(event) => setMemoryReply(event.target.value)}
-              placeholder="SOP instructions / exact suggested wording..."
-              className="min-h-[130px]"
-            />
-            <Textarea
-              value={memoryNotes}
-              onChange={(event) => setMemoryNotes(event.target.value)}
-              placeholder="Extra rule, escalation trigger, or follow-up note..."
-              className="min-h-[90px]"
+              value={sopContent}
+              onChange={(event) => setSopContent(event.target.value)}
+              placeholder="Paste the full SOP here..."
+              className="min-h-[260px]"
             />
             <Button onClick={saveTutorMemory} disabled={savingMemory} leftIcon={savingMemory ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}>
-              Save Call Tutor SOP Memory
+              Save SOP Memory
             </Button>
           </CardContent>
         </Card>
