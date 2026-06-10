@@ -4,10 +4,13 @@ import {
   Bot,
   CheckCircle2,
   Clipboard,
+  Database,
   Loader2,
   MessageCircle,
   MonitorUp,
+  Plus,
   RefreshCw,
+  Save,
   Send,
   Sparkles,
   Square,
@@ -20,7 +23,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Textarea } from '@/components/ui/Textarea';
-import { listAIMemories } from '@/services/aiMemory';
+import { createAIMemory, deactivateAIMemory, listAIMemories } from '@/services/aiMemory';
 import {
   getRealtimeTutorChatReply,
   transcribeTutorAudio,
@@ -42,15 +45,18 @@ function formatTime(value: string) {
   return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function memoryText(memories: AIMemory[]) {
+function isTutorMemory(memory: AIMemory) {
+  return (memory.tags ?? []).map((tag) => tag.toLowerCase()).includes('call_tutor');
+}
+
+function tutorMemoryText(memories: AIMemory[]) {
   return memories
-    .filter((memory) => memory.is_active)
+    .filter((memory) => memory.is_active && isTutorMemory(memory))
     .map((memory) => [
       `TITLE: ${memory.title}`,
-      `TYPE: ${memory.memory_type}`,
       `CONFIDENCE: ${memory.confidence}`,
       memory.tags?.length ? `TAGS: ${memory.tags.join(', ')}` : '',
-      `MEMORY: ${memory.summary}`
+      `CALL TUTOR MEMORY: ${memory.summary}`
     ].filter(Boolean).join('\n'))
     .join('\n\n---\n\n');
 }
@@ -82,6 +88,11 @@ export function RealtimeCallTutorPage() {
   const [audioHelp, setAudioHelp] = useState('Use Capture Tab Audio so the system can hear what the customer says and auto-create replies.');
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
+  const [memoryTitle, setMemoryTitle] = useState('');
+  const [memorySituation, setMemorySituation] = useState('');
+  const [memoryReply, setMemoryReply] = useState('');
+  const [memoryNotes, setMemoryNotes] = useState('');
+  const [savingMemory, setSavingMemory] = useState(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const displayStreamRef = useRef<MediaStream | null>(null);
@@ -90,8 +101,8 @@ export function RealtimeCallTutorPage() {
   const lastHeardRef = useRef('');
   const replyQueueRef = useRef<Promise<void>>(Promise.resolve());
 
-  const activeMemories = useMemo(() => memories.filter((memory) => memory.is_active), [memories]);
-  const aiMemory = useMemo(() => memoryText(memories), [memories]);
+  const tutorMemories = useMemo(() => memories.filter((memory) => memory.is_active && isTutorMemory(memory)), [memories]);
+  const callTutorMemory = useMemo(() => tutorMemoryText(memories), [memories]);
   const conversation = useMemo(() => buildConversation(rows), [rows]);
 
   useEffect(() => {
@@ -112,10 +123,10 @@ export function RealtimeCallTutorPage() {
     setMemoryLoading(true);
     setError('');
     try {
-      const data = await listAIMemories();
+      const data = await listAIMemories({ activeOnly: true, limit: 200 });
       setMemories(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load AI Memory.');
+      setError(err instanceof Error ? err.message : 'Unable to load Call Tutor Memory.');
     } finally {
       setMemoryLoading(false);
     }
@@ -125,6 +136,59 @@ export function RealtimeCallTutorPage() {
     await navigator.clipboard.writeText(value);
     setCopied(label);
     window.setTimeout(() => setCopied(''), 1400);
+  };
+
+  const saveTutorMemory = async () => {
+    const title = memoryTitle.trim();
+    const situation = memorySituation.trim();
+    const reply = memoryReply.trim();
+    const notes = memoryNotes.trim();
+
+    if (!title || !situation || !reply) {
+      setError('Add a title, customer situation, and suggested reply before saving memory.');
+      return;
+    }
+
+    setSavingMemory(true);
+    setError('');
+
+    try {
+      await createAIMemory({
+        memory_type: 'customer_reply',
+        title,
+        summary: [
+          `When customer says / situation: ${situation}`,
+          `Suggested reply Carl should say: ${reply}`,
+          notes ? `Extra rule / note: ${notes}` : ''
+        ].filter(Boolean).join('\n\n'),
+        tags: ['call_tutor', 'realtime_call_tutor'],
+        source_escalation_id: null,
+        confidence: 'high',
+        is_active: true
+      });
+
+      setMemoryTitle('');
+      setMemorySituation('');
+      setMemoryReply('');
+      setMemoryNotes('');
+      setCopied('Call Tutor memory saved.');
+      window.setTimeout(() => setCopied(''), 1400);
+      await loadMemories();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save Call Tutor Memory.');
+    } finally {
+      setSavingMemory(false);
+    }
+  };
+
+  const forgetTutorMemory = async (id: string) => {
+    setError('');
+    try {
+      await deactivateAIMemory(id);
+      setMemories((current) => current.filter((memory) => memory.id !== id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not remove memory.');
+    }
   };
 
   const stopAudioMeter = () => {
@@ -213,8 +277,8 @@ export function RealtimeCallTutorPage() {
         latestCustomerText: clean,
         conversation: buildConversation(nextRows),
         messages,
-        aiMemory,
-        memoryCount: activeMemories.length
+        aiMemory: callTutorMemory,
+        memoryCount: tutorMemories.length
       });
 
       setRows((current) => [
@@ -264,8 +328,8 @@ export function RealtimeCallTutorPage() {
         latestCustomerText: `Rewrite this reply in ${mode} style: ${lastCoach.reply.recommendedReply}`,
         conversation,
         messages: rows.map((row) => row.role === 'customer' ? { role: 'customer', text: row.text } : { role: 'coach', text: row.reply.recommendedReply }),
-        aiMemory,
-        memoryCount: activeMemories.length,
+        aiMemory: callTutorMemory,
+        memoryCount: tutorMemories.length,
         mode
       });
       setRows((current) => current.map((row) => row.id === lastCoach.id && row.role === 'coach' ? { ...row, reply: { ...row.reply, recommendedReply: reply.recommendedReply } } : row));
@@ -384,10 +448,10 @@ export function RealtimeCallTutorPage() {
         <div>
           <p className="page-kicker">AI CUSTOMER SERVICE</p>
           <h1 className="page-title">Realtime Call Tutor</h1>
-          <p className="page-subtitle">Customer says → Suggested Reply → Customer says → Suggested Reply. Memory comes from your existing AI Memory page.</p>
+          <p className="page-subtitle">Customer says → Suggested Reply → Customer says → Suggested Reply. This tab now has its own Call Tutor Memory.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Badge tone="blue">{memoryLoading ? 'Loading memory...' : `${activeMemories.length} AI memories loaded`}</Badge>
+          <Badge tone="blue">{memoryLoading ? 'Loading memory...' : `${tutorMemories.length} Call Tutor memories`}</Badge>
           <Button variant="secondary" onClick={loadMemories} leftIcon={<RefreshCw className="h-4 w-4" />}>Refresh Memory</Button>
           <Button variant="danger" onClick={newCall} leftIcon={<Trash2 className="h-4 w-4" />}>New Call</Button>
         </div>
@@ -396,41 +460,79 @@ export function RealtimeCallTutorPage() {
       {error ? <Alert className="mb-5 text-red-700">{error}</Alert> : null}
       {copied ? <div className="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{copied}</div> : null}
 
-      <div className="mb-5 rounded-3xl border border-slate-200 bg-white p-5 shadow-soft">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-start gap-3">
-            <div className="rounded-2xl bg-ga-50 p-3 text-ga-700"><MessageCircle className="h-6 w-6" /></div>
-            <div>
-              <h2 className="text-lg font-bold text-slate-950">Simple call flow</h2>
-              <p className="mt-1 text-sm leading-6 text-slate-600">You can still type the customer message manually, but now you can also capture tab audio so the customer side auto-fills into the chat.</p>
+      <div className="mb-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_390px]">
+        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-soft">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-start gap-3">
+              <div className="rounded-2xl bg-ga-50 p-3 text-ga-700"><MessageCircle className="h-6 w-6" /></div>
+              <div>
+                <h2 className="text-lg font-bold text-slate-950">Simple call flow</h2>
+                <p className="mt-1 text-sm leading-6 text-slate-600">Type or capture what the customer says. The suggested reply uses only Call Tutor Memory plus this active conversation.</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {!tabAudioActive ? (
+                <Button onClick={startTabAudioCapture} disabled={audioLoading || loadingReply} leftIcon={audioLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <MonitorUp className="h-4 w-4" />}>
+                  Capture Tab Audio
+                </Button>
+              ) : (
+                <Button variant="danger" onClick={stopTabAudioCapture} leftIcon={<Square className="h-4 w-4" />}>
+                  Stop Audio
+                </Button>
+              )}
             </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {!tabAudioActive ? (
-              <Button onClick={startTabAudioCapture} disabled={audioLoading || loadingReply} leftIcon={audioLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <MonitorUp className="h-4 w-4" />}>
-                Capture Tab Audio
-              </Button>
-            ) : (
-              <Button variant="danger" onClick={stopTabAudioCapture} leftIcon={<Square className="h-4 w-4" />}>
-                Stop Audio
-              </Button>
-            )}
+
+          <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                <Volume2 className="h-4 w-4 text-ga-700" /> Audio status
+              </div>
+              <Badge tone={tabAudioActive ? 'green' : 'slate'}>{tabAudioActive ? 'Listening' : 'Stopped'}</Badge>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-slate-200">
+              <div className="h-full rounded-full bg-emerald-500 transition-all duration-200" style={{ width: `${Math.max(4, audioLevel)}%` }} />
+            </div>
+            <p className="mt-2 text-sm leading-6 text-slate-600">{audioHelp}</p>
+            <p className="mt-2 text-xs leading-5 text-slate-500">When the browser asks what to share, choose the Quo/OpenPhone tab and check <span className="font-semibold">Share tab audio</span>.</p>
           </div>
         </div>
 
-        <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-              <Volume2 className="h-4 w-4 text-ga-700" /> Audio status
-            </div>
-            <Badge tone={tabAudioActive ? 'green' : 'slate'}>{tabAudioActive ? 'Listening' : 'Stopped'}</Badge>
-          </div>
-          <div className="h-2 overflow-hidden rounded-full bg-slate-200">
-            <div className="h-full rounded-full bg-emerald-500 transition-all duration-200" style={{ width: `${Math.max(4, audioLevel)}%` }} />
-          </div>
-          <p className="mt-2 text-sm leading-6 text-slate-600">{audioHelp}</p>
-          <p className="mt-2 text-xs leading-5 text-slate-500">When the browser asks what to share, choose the Quo/OpenPhone tab and check <span className="font-semibold">Share tab audio</span>.</p>
-        </div>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2"><Database className="h-5 w-5 text-ga-700" /> Call Tutor Memory</CardTitle>
+            <CardDescription>Add examples of what Carl should say in specific situations.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <input
+              value={memoryTitle}
+              onChange={(event) => setMemoryTitle(event.target.value)}
+              placeholder="Title, example: Customer cannot send photos"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-ga-500 focus:ring-2 focus:ring-ga-500/20"
+            />
+            <Textarea
+              value={memorySituation}
+              onChange={(event) => setMemorySituation(event.target.value)}
+              placeholder="When customer says / situation..."
+              className="min-h-[70px]"
+            />
+            <Textarea
+              value={memoryReply}
+              onChange={(event) => setMemoryReply(event.target.value)}
+              placeholder="Suggested reply Carl should say..."
+              className="min-h-[80px]"
+            />
+            <Textarea
+              value={memoryNotes}
+              onChange={(event) => setMemoryNotes(event.target.value)}
+              placeholder="Extra rule or note, optional..."
+              className="min-h-[60px]"
+            />
+            <Button onClick={saveTutorMemory} disabled={savingMemory} leftIcon={savingMemory ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}>
+              Save Call Tutor Memory
+            </Button>
+          </CardContent>
+        </Card>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -472,7 +574,7 @@ export function RealtimeCallTutorPage() {
                   <div className="max-w-md rounded-3xl border border-dashed border-slate-300 bg-white p-8">
                     <MessageCircle className="mx-auto mb-3 h-10 w-10 text-ga-700" />
                     <p className="text-lg font-bold text-slate-950">Start with what the customer says</p>
-                    <p className="mt-2 text-sm leading-6 text-slate-500">You can type it manually or use Capture Tab Audio so the system hears the customer and generates the next reply automatically.</p>
+                    <p className="mt-2 text-sm leading-6 text-slate-500">Type it manually or use Capture Tab Audio so the system hears the customer and generates the next reply automatically.</p>
                   </div>
                 </div>
               )}
@@ -521,7 +623,7 @@ export function RealtimeCallTutorPage() {
           </Card>
 
           <Card>
-            <CardHeader><CardTitle>Coach Notes</CardTitle><CardDescription>Only the important parts are kept here now.</CardDescription></CardHeader>
+            <CardHeader><CardTitle>Coach Notes</CardTitle><CardDescription>Only the important parts are kept here.</CardDescription></CardHeader>
             <CardContent className="space-y-4">
               {lastReply ? (
                 <>
@@ -537,14 +639,23 @@ export function RealtimeCallTutorPage() {
           </Card>
 
           <Card>
-            <CardHeader><CardTitle>How this works</CardTitle></CardHeader>
-            <CardContent className="space-y-2 text-sm leading-6 text-slate-600">
-              <p>1. Click Capture Tab Audio.</p>
-              <p>2. Choose the customer call tab and check Share tab audio.</p>
-              <p>3. When the customer speaks, the system auto-adds the customer line.</p>
-              <p>4. The suggested reply is generated automatically.</p>
-              <p>5. If needed, you can still type the customer message manually.</p>
-              <p className="font-semibold text-ga-800">Memory source: existing AI Memory page. No separate upload needed.</p>
+            <CardHeader><CardTitle>Saved Call Tutor Memories</CardTitle><CardDescription>Only memories tagged for this call tutor are shown.</CardDescription></CardHeader>
+            <CardContent className="space-y-3">
+              {tutorMemories.length ? tutorMemories.slice(0, 8).map((memory) => (
+                <div key={memory.id} className="rounded-2xl border border-slate-200 bg-white p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{memory.title}</p>
+                      <p className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap text-xs leading-5 text-slate-600">{memory.summary}</p>
+                    </div>
+                    <button type="button" onClick={() => void forgetTutorMemory(memory.id)} className="rounded-full p-1 text-slate-400 hover:bg-red-50 hover:text-red-600">
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              )) : (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">No Call Tutor memories yet. Add examples above.</div>
+              )}
             </CardContent>
           </Card>
         </div>
