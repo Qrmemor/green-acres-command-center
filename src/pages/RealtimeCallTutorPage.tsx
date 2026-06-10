@@ -6,11 +6,14 @@ import {
   Clipboard,
   Loader2,
   MessageCircle,
+  MonitorUp,
   RefreshCw,
   Send,
   Sparkles,
+  Square,
   Trash2,
-  UserRound
+  UserRound,
+  Volume2
 } from 'lucide-react';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
@@ -18,11 +21,16 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Textarea } from '@/components/ui/Textarea';
 import { listAIMemories } from '@/services/aiMemory';
-import { getRealtimeTutorChatReply, type TutorChatMessage, type TutorChatReply } from '@/services/realtimeCallTutor';
+import {
+  getRealtimeTutorChatReply,
+  transcribeTutorAudio,
+  type TutorChatMessage,
+  type TutorChatReply
+} from '@/services/realtimeCallTutor';
 import type { AIMemory } from '@/types';
 
 type ChatRow =
-  | { id: string; role: 'customer'; text: string; createdAt: string }
+  | { id: string; role: 'customer'; text: string; createdAt: string; source?: 'manual' | 'tab-audio' }
   | { id: string; role: 'coach'; customerText: string; reply: TutorChatReply; createdAt: string };
 
 function makeId() {
@@ -50,8 +58,16 @@ function memoryText(memories: AIMemory[]) {
 function buildConversation(rows: ChatRow[]) {
   return rows.map((row) => {
     if (row.role === 'customer') return `Customer: ${row.text}`;
-    return `Suggested Reply: ${row.reply.recommendedReply}\nNext Step: ${row.reply.nextStep}\nEscalation Needed: ${row.reply.escalationNeeded ? 'Yes' : 'No'}`;
+    return `Suggested Reply: ${row.reply.recommendedReply}\nEscalation Needed: ${row.reply.escalationNeeded ? 'Yes' : 'No'}`;
   }).join('\n\n');
+}
+
+function normalizeText(value: string) {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function canRecordTabAudio() {
+  return typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getDisplayMedia) && typeof MediaRecorder !== 'undefined';
 }
 
 export function RealtimeCallTutorPage() {
@@ -60,9 +76,19 @@ export function RealtimeCallTutorPage() {
   const [rows, setRows] = useState<ChatRow[]>([]);
   const [customerInput, setCustomerInput] = useState('');
   const [loadingReply, setLoadingReply] = useState(false);
+  const [audioLoading, setAudioLoading] = useState(false);
+  const [tabAudioActive, setTabAudioActive] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [audioHelp, setAudioHelp] = useState('Use Capture Tab Audio so the system can hear what the customer says and auto-create replies.');
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const displayStreamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioMeterFrameRef = useRef<number | null>(null);
+  const lastHeardRef = useRef('');
+  const replyQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const activeMemories = useMemo(() => memories.filter((memory) => memory.is_active), [memories]);
   const aiMemory = useMemo(() => memoryText(memories), [memories]);
@@ -75,6 +101,12 @@ export function RealtimeCallTutorPage() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [rows, loadingReply]);
+
+  useEffect(() => {
+    return () => {
+      stopTabAudioCapture();
+    };
+  }, []);
 
   const loadMemories = async () => {
     setMemoryLoading(true);
@@ -95,14 +127,83 @@ export function RealtimeCallTutorPage() {
     window.setTimeout(() => setCopied(''), 1400);
   };
 
-  const submitCustomerSays = async () => {
-    const clean = customerInput.trim();
-    if (!clean) return;
+  const stopAudioMeter = () => {
+    if (audioMeterFrameRef.current !== null) {
+      cancelAnimationFrame(audioMeterFrameRef.current);
+      audioMeterFrameRef.current = null;
+    }
 
-    const customerRow: ChatRow = { id: makeId(), role: 'customer', text: clean, createdAt: new Date().toISOString() };
+    if (audioContextRef.current) {
+      void audioContextRef.current.close().catch(() => undefined);
+      audioContextRef.current = null;
+    }
+
+    setAudioLevel(0);
+  };
+
+  const startAudioMeter = (stream: MediaStream) => {
+    stopAudioMeter();
+
+    try {
+      const AudioContextConstructor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextConstructor) {
+        setAudioHelp('Audio meter is not supported in this browser. Use Chrome or Edge.');
+        return;
+      }
+
+      const audioContext = new AudioContextConstructor();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 1024;
+      source.connect(analyser);
+      audioContextRef.current = audioContext;
+
+      const data = new Uint8Array(analyser.fftSize);
+      let quietFrames = 0;
+
+      const tick = () => {
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let index = 0; index < data.length; index += 1) {
+          const centered = data[index] - 128;
+          sum += centered * centered;
+        }
+        const rms = Math.sqrt(sum / data.length);
+        const normalized = Math.min(100, Math.round((rms / 38) * 100));
+        setAudioLevel(normalized);
+
+        if (normalized >= 3) {
+          quietFrames = 0;
+          setAudioHelp('Hearing customer tab audio. Suggested replies will update automatically.');
+        } else {
+          quietFrames += 1;
+          if (quietFrames > 80) {
+            setAudioHelp('No clear tab audio detected. Re-share the customer call tab and check Share tab audio.');
+          } else {
+            setAudioHelp('Waiting for customer speech...');
+          }
+        }
+
+        audioMeterFrameRef.current = requestAnimationFrame(tick);
+      };
+
+      tick();
+    } catch {
+      setAudioHelp('Could not start the audio meter.');
+    }
+  };
+
+  const generateReplyForCustomerLine = async (clean: string, source: 'manual' | 'tab-audio') => {
+    const customerRow: ChatRow = {
+      id: makeId(),
+      role: 'customer',
+      text: clean,
+      createdAt: new Date().toISOString(),
+      source
+    };
+
     const nextRows = [...rows, customerRow];
     setRows(nextRows);
-    setCustomerInput('');
     setLoadingReply(true);
     setError('');
 
@@ -115,12 +216,42 @@ export function RealtimeCallTutorPage() {
         aiMemory,
         memoryCount: activeMemories.length
       });
-      setRows((current) => [...current, { id: makeId(), role: 'coach', customerText: clean, reply, createdAt: new Date().toISOString() }]);
+
+      setRows((current) => [
+        ...current,
+        { id: makeId(), role: 'coach', customerText: clean, reply, createdAt: new Date().toISOString() }
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Realtime tutor failed.');
     } finally {
       setLoadingReply(false);
     }
+  };
+
+  const pushCustomerLine = (text: string, source: 'manual' | 'tab-audio') => {
+    const clean = text.trim();
+    if (!clean) return;
+
+    const normalized = normalizeText(clean);
+    if (normalized.length < 3) return;
+
+    const last = normalizeText(lastHeardRef.current);
+    if (last && (last === normalized || last.includes(normalized) || normalized.includes(last))) {
+      return;
+    }
+
+    lastHeardRef.current = clean;
+
+    replyQueueRef.current = replyQueueRef.current.then(async () => {
+      await generateReplyForCustomerLine(clean, source);
+    });
+  };
+
+  const submitCustomerSays = async () => {
+    const clean = customerInput.trim();
+    if (!clean) return;
+    setCustomerInput('');
+    pushCustomerLine(clean, 'manual');
   };
 
   const rewriteLast = async (mode: 'shorter' | 'professional' | 'taglish') => {
@@ -145,11 +276,104 @@ export function RealtimeCallTutorPage() {
     }
   };
 
+  const stopTabAudioCapture = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        // noop
+      }
+    }
+
+    if (displayStreamRef.current) {
+      displayStreamRef.current.getTracks().forEach((track) => track.stop());
+      displayStreamRef.current = null;
+    }
+
+    mediaRecorderRef.current = null;
+    stopAudioMeter();
+    setTabAudioActive(false);
+    setAudioLoading(false);
+    setAudioHelp('Tab audio stopped. You can start it again when the next call begins.');
+  };
+
+  const startTabAudioCapture = async () => {
+    if (!canRecordTabAudio()) {
+      setError('Tab audio capture needs Chrome or Edge with screen/tab sharing support.');
+      return;
+    }
+
+    setError('');
+    setAudioLoading(true);
+
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true
+      });
+
+      const audioTracks = stream.getAudioTracks();
+      if (!audioTracks.length) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw new Error('No tab audio was shared. Please select the Quo/OpenPhone tab and check Share tab audio.');
+      }
+
+      displayStreamRef.current = stream;
+      setTabAudioActive(true);
+      setAudioHelp('Tab audio connected. When the customer speaks, the system will auto-transcribe and generate a reply.');
+      startAudioMeter(stream);
+
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+      const recorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = async (event) => {
+        if (!event.data || event.data.size < 8000) return;
+        try {
+          const text = await transcribeTutorAudio(event.data);
+          if (text) {
+            pushCustomerLine(text, 'tab-audio');
+          }
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Could not transcribe tab audio.');
+        }
+      };
+
+      recorder.onerror = () => {
+        setError('Tab audio recorder failed. Stop and start it again.');
+      };
+
+      recorder.onstop = () => {
+        if (displayStreamRef.current) {
+          displayStreamRef.current.getTracks().forEach((track) => track.stop());
+          displayStreamRef.current = null;
+        }
+        stopAudioMeter();
+        setTabAudioActive(false);
+      };
+
+      stream.getVideoTracks().forEach((track) => {
+        track.onended = () => {
+          stopTabAudioCapture();
+        };
+      });
+
+      recorder.start(5000);
+    } catch (err) {
+      stopTabAudioCapture();
+      setError(err instanceof Error ? err.message : 'Could not start tab audio capture.');
+    } finally {
+      setAudioLoading(false);
+    }
+  };
+
   const newCall = () => {
     setRows([]);
     setCustomerInput('');
     setCopied('');
     setError('');
+    lastHeardRef.current = '';
+    stopTabAudioCapture();
   };
 
   const lastReply = [...rows].reverse().find((row): row is Extract<ChatRow, { role: 'coach' }> => row.role === 'coach');
@@ -173,12 +397,39 @@ export function RealtimeCallTutorPage() {
       {copied ? <div className="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{copied}</div> : null}
 
       <div className="mb-5 rounded-3xl border border-slate-200 bg-white p-5 shadow-soft">
-        <div className="flex items-start gap-3">
-          <div className="rounded-2xl bg-ga-50 p-3 text-ga-700"><MessageCircle className="h-6 w-6" /></div>
-          <div>
-            <h2 className="text-lg font-bold text-slate-950">Simple call flow</h2>
-            <p className="mt-1 text-sm leading-6 text-slate-600">Type the exact thing the customer said. The tutor replies with the exact line you can read. Keep adding customer lines until the call ends.</p>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="rounded-2xl bg-ga-50 p-3 text-ga-700"><MessageCircle className="h-6 w-6" /></div>
+            <div>
+              <h2 className="text-lg font-bold text-slate-950">Simple call flow</h2>
+              <p className="mt-1 text-sm leading-6 text-slate-600">You can still type the customer message manually, but now you can also capture tab audio so the customer side auto-fills into the chat.</p>
+            </div>
           </div>
+          <div className="flex flex-wrap gap-2">
+            {!tabAudioActive ? (
+              <Button onClick={startTabAudioCapture} disabled={audioLoading || loadingReply} leftIcon={audioLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <MonitorUp className="h-4 w-4" />}>
+                Capture Tab Audio
+              </Button>
+            ) : (
+              <Button variant="danger" onClick={stopTabAudioCapture} leftIcon={<Square className="h-4 w-4" />}>
+                Stop Audio
+              </Button>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+              <Volume2 className="h-4 w-4 text-ga-700" /> Audio status
+            </div>
+            <Badge tone={tabAudioActive ? 'green' : 'slate'}>{tabAudioActive ? 'Listening' : 'Stopped'}</Badge>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-slate-200">
+            <div className="h-full rounded-full bg-emerald-500 transition-all duration-200" style={{ width: `${Math.max(4, audioLevel)}%` }} />
+          </div>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{audioHelp}</p>
+          <p className="mt-2 text-xs leading-5 text-slate-500">When the browser asks what to share, choose the Quo/OpenPhone tab and check <span className="font-semibold">Share tab audio</span>.</p>
         </div>
       </div>
 
@@ -195,6 +446,7 @@ export function RealtimeCallTutorPage() {
                   <div className="max-w-[78%] rounded-[24px] rounded-tl-md border border-slate-200 bg-white px-5 py-4 shadow-sm">
                     <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
                       <UserRound className="h-4 w-4" /> Customer says <span className="font-normal normal-case text-slate-400">{formatTime(row.createdAt)}</span>
+                      <Badge tone={row.source === 'tab-audio' ? 'blue' : 'slate'}>{row.source === 'tab-audio' ? 'Tab audio' : 'Manual'}</Badge>
                     </div>
                     <p className="whitespace-pre-wrap text-sm leading-6 text-slate-900">{row.text}</p>
                   </div>
@@ -206,9 +458,9 @@ export function RealtimeCallTutorPage() {
                       <Bot className="h-4 w-4" /> Suggested Reply <span className="font-normal normal-case text-ga-200">{formatTime(row.createdAt)}</span>
                     </div>
                     <p className="whitespace-pre-wrap text-lg font-semibold leading-8">{row.reply.recommendedReply}</p>
-                    <div className="mt-4 grid gap-3 rounded-2xl bg-white/10 p-3 text-sm">
-                      <div><p className="text-xs font-semibold uppercase tracking-wide text-ga-100">Next step</p><p className="mt-1 leading-6 text-white">{row.reply.nextStep}</p></div>
-                      <div><p className="text-xs font-semibold uppercase tracking-wide text-ga-100">Escalation needed</p><p className="mt-1 leading-6 text-white">{row.reply.escalationNeeded ? `Yes. ${row.reply.escalationReason}` : 'No'}</p></div>
+                    <div className="mt-4 rounded-2xl bg-white/10 p-3 text-sm">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-ga-100">Escalation needed</p>
+                      <p className="mt-1 leading-6 text-white">{row.reply.escalationNeeded ? `Yes. ${row.reply.escalationReason}` : 'No'}</p>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <Button size="sm" variant="secondary" onClick={() => copy(row.reply.recommendedReply, 'Reply copied.')} leftIcon={<Clipboard className="h-4 w-4" />}>Copy</Button>
@@ -220,7 +472,7 @@ export function RealtimeCallTutorPage() {
                   <div className="max-w-md rounded-3xl border border-dashed border-slate-300 bg-white p-8">
                     <MessageCircle className="mx-auto mb-3 h-10 w-10 text-ga-700" />
                     <p className="text-lg font-bold text-slate-950">Start with what the customer says</p>
-                    <p className="mt-2 text-sm leading-6 text-slate-500">Example: “I want an estimate for lawn cleanup but I can’t send photos.”</p>
+                    <p className="mt-2 text-sm leading-6 text-slate-500">You can type it manually or use Capture Tab Audio so the system hears the customer and generates the next reply automatically.</p>
                   </div>
                 </div>
               )}
@@ -229,7 +481,7 @@ export function RealtimeCallTutorPage() {
             </div>
 
             <div className="border-t border-slate-200 bg-white p-4">
-              <div className="mb-2 flex items-center justify-between"><p className="text-sm font-semibold text-slate-900">Customer says</p><p className="text-xs text-slate-500">Uses AI Memory automatically</p></div>
+              <div className="mb-2 flex items-center justify-between"><p className="text-sm font-semibold text-slate-900">Customer says</p><p className="text-xs text-slate-500">Manual input still works anytime</p></div>
               <Textarea
                 value={customerInput}
                 onChange={(event) => setCustomerInput(event.target.value)}
@@ -269,11 +521,10 @@ export function RealtimeCallTutorPage() {
           </Card>
 
           <Card>
-            <CardHeader><CardTitle>Coach Notes</CardTitle><CardDescription>Next step, missing info, and escalation check.</CardDescription></CardHeader>
+            <CardHeader><CardTitle>Coach Notes</CardTitle><CardDescription>Only the important parts are kept here now.</CardDescription></CardHeader>
             <CardContent className="space-y-4">
               {lastReply ? (
                 <>
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next Step</p><p className="mt-2 text-sm leading-6 text-slate-800">{lastReply.reply.nextStep}</p></div>
                   <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Missing Info</p><div className="mt-2 flex flex-wrap gap-2">{lastReply.reply.missingInfo.length ? lastReply.reply.missingInfo.map((item) => <Badge key={item} tone="amber">{item}</Badge>) : <Badge tone="green">None</Badge>}</div></div>
                   <div className={`rounded-2xl border p-4 ${lastReply.reply.escalationNeeded ? 'border-red-200 bg-red-50' : 'border-emerald-200 bg-emerald-50'}`}>
                     <p className="flex items-center gap-2 text-sm font-semibold">{lastReply.reply.escalationNeeded ? <AlertTriangle className="h-4 w-4 text-red-700" /> : <CheckCircle2 className="h-4 w-4 text-emerald-700" />} Escalation Needed: {lastReply.reply.escalationNeeded ? 'Yes' : 'No'}</p>
@@ -288,10 +539,11 @@ export function RealtimeCallTutorPage() {
           <Card>
             <CardHeader><CardTitle>How this works</CardTitle></CardHeader>
             <CardContent className="space-y-2 text-sm leading-6 text-slate-600">
-              <p>1. Type what the customer said.</p>
-              <p>2. Read the Suggested Reply.</p>
-              <p>3. Type the next customer reply.</p>
-              <p>4. Continue until the call ends.</p>
+              <p>1. Click Capture Tab Audio.</p>
+              <p>2. Choose the customer call tab and check Share tab audio.</p>
+              <p>3. When the customer speaks, the system auto-adds the customer line.</p>
+              <p>4. The suggested reply is generated automatically.</p>
+              <p>5. If needed, you can still type the customer message manually.</p>
               <p className="font-semibold text-ga-800">Memory source: existing AI Memory page. No separate upload needed.</p>
             </CardContent>
           </Card>

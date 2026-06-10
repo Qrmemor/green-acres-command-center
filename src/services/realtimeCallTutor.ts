@@ -36,7 +36,7 @@ function fallbackReply(payload: TutorChatPayload): TutorChatReply {
       recommendedReply: "No problem. I can note that and gather the details first. I can’t promise a visit on this call, but I’ll document the request and review the best next step internally.",
       nextStep: "Ask the customer to describe the area and confirm any timeline or access notes.",
       escalationNeeded: true,
-      escalationReason: "Customer is asking for a visit/site review, which should not be promised without owner confirmation.",
+      escalationReason: "Customer is asking for a visit or site review, which should not be promised without owner confirmation.",
       missingInfo: ["area description", "timeline", "access notes"],
       sourceBasis: payload.memoryCount ? "Used AI Memory where available with safe fallback." : "No AI Memory loaded, used safe fallback."
     };
@@ -66,4 +66,22 @@ export async function getRealtimeTutorChatReply(payload: TutorChatPayload): Prom
   } catch {
     return fallbackReply(payload);
   }
+}
+
+interface TranscribeResponse {
+  ok: boolean;
+  text?: string;
+  error?: string;
+}
+
+export async function transcribeTutorAudio(blob: Blob): Promise<string> {
+  const response = await fetch('/api/realtime-call-transcribe', {
+    method: 'POST',
+    headers: { 'Content-Type': blob.type || 'audio/webm' },
+    body: blob
+  });
+
+  const data = (await response.json()) as TranscribeResponse;
+  if (!data.ok) throw new Error(data.error || 'Could not transcribe audio.');
+  return (data.text || '').trim();
 }
