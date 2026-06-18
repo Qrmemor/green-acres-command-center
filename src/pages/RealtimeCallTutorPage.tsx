@@ -98,6 +98,7 @@ export function RealtimeCallTutorPage() {
   const [rows, setRows] = useState<ChatRow[]>([]);
   const [customerInput, setCustomerInput] = useState('');
   const [loadingReply, setLoadingReply] = useState(false);
+  const [callerType, setCallerType] = useState<'lead' | 'customer'>('lead');
   const [audioLoading, setAudioLoading] = useState(false);
   const [tabAudioActive, setTabAudioActive] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -296,7 +297,8 @@ export function RealtimeCallTutorPage() {
         conversation: buildConversation(nextRows),
         messages,
         aiMemory: callTutorMemory,
-        memoryCount: tutorMemories.length
+        memoryCount: tutorMemories.length,
+        callerType
       });
 
       const coachRow: ChatRow = {
@@ -356,6 +358,7 @@ export function RealtimeCallTutorPage() {
         messages: rows.map((row) => row.role === 'customer' ? { role: 'customer', text: row.text } : { role: 'coach', text: row.reply.recommendedReply }),
         aiMemory: callTutorMemory,
         memoryCount: tutorMemories.length,
+        callerType,
         mode
       });
       setRows((current) => current.map((row) => row.id === lastCoach.id && row.role === 'coach' ? { ...row, reply: { ...row.reply, recommendedReply: reply.recommendedReply } } : row));
@@ -529,6 +532,7 @@ export function RealtimeCallTutorPage() {
           <p className="page-subtitle">Customer says → Suggested Reply → Customer says → Suggested Reply. This tab now has its own Call Tutor SOP Memory.</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Badge tone={callerType === 'customer' ? 'amber' : 'blue'}>{callerType === 'customer' ? 'Existing Customer Mode' : 'New Lead Mode'}</Badge>
           <Badge tone="blue">{memoryLoading ? 'Loading memory...' : `${tutorMemories.length} Call Tutor SOPs`}</Badge>
           <Button variant="secondary" onClick={loadMemories} leftIcon={<RefreshCw className="h-4 w-4" />}>Refresh Memory</Button>
           <Button variant="danger" onClick={newCall} leftIcon={<Trash2 className="h-4 w-4" />}>New Call</Button>
@@ -558,6 +562,28 @@ export function RealtimeCallTutorPage() {
                   Stop Audio
                 </Button>
               )}
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="mb-2 text-sm font-semibold text-slate-900">Caller type</p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => setCallerType('lead')}
+                className={`rounded-2xl border px-4 py-3 text-left transition ${callerType === 'lead' ? 'border-ga-600 bg-ga-50 text-ga-900 shadow-sm' : 'border-slate-200 bg-white text-slate-600 hover:border-ga-300'}`}
+              >
+                <span className="block text-sm font-bold">New Lead</span>
+                <span className="mt-1 block text-xs leading-5">Use this for new estimate or service requests.</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCallerType('customer')}
+                className={`rounded-2xl border px-4 py-3 text-left transition ${callerType === 'customer' ? 'border-ga-600 bg-ga-50 text-ga-900 shadow-sm' : 'border-slate-200 bg-white text-slate-600 hover:border-ga-300'}`}
+              >
+                <span className="block text-sm font-bold">Existing Customer</span>
+                <span className="mt-1 block text-xs leading-5">Use this when you know they are already a customer.</span>
+              </button>
             </div>
           </div>
 

@@ -48,6 +48,7 @@ export default async function handler(req: any, res: any) {
     const aiMemory = String(body.aiMemory || '');
     const memoryCount = Number(body.memoryCount || 0);
     const mode = String(body.mode || 'live');
+    const callerType = String(body.callerType || 'lead');
 
     const systemPrompt = `You are Carl's realtime customer service call tutor.
 
@@ -58,6 +59,9 @@ Your job is to provide the next exact Suggested Reply Carl can read out loud.
 Rules:
 - Use Call Tutor SOP Memory as the primary knowledge base. Treat it as SOP, scripts, and exact call-response rules.
 - Do not use separate uploaded files. The only knowledge source is Call Tutor SOP Memory plus current conversation.
+- The caller type will be either NEW LEAD or EXISTING CUSTOMER. Follow that mode.
+- If caller type is EXISTING CUSTOMER, do not treat them like a new lead. Focus on account/service issue, confirm property address, service involved, callback number, and escalate complaints, billing, pricing, damage, missed service, schedule disputes, or Bradley requests.
+- If caller type is NEW LEAD, focus on intake: name, property address, service needed, photos/video, timeline, access notes, and safe follow-up.
 - Use the latest customer message as the main focus.
 - Use conversation history so you do not repeat questions already asked/answered.
 - Keep recommendedReply short, natural, and easy to read during a call.
@@ -79,6 +83,7 @@ Return ONLY valid JSON:
 }`;
 
     const userPrompt = `MODE: ${mode}
+CALLER TYPE: ${callerType === 'customer' ? 'EXISTING CUSTOMER' : 'NEW LEAD'}
 CALL TUTOR SOP MEMORY COUNT: ${memoryCount}
 
 LATEST CUSTOMER SAYS:

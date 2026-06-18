@@ -18,6 +18,7 @@ export interface TutorChatPayload {
   messages: TutorChatMessage[];
   aiMemory: string;
   memoryCount: number;
+  callerType?: 'lead' | 'customer';
   mode?: 'live' | 'shorter' | 'professional' | 'taglish';
 }
 
@@ -29,7 +30,19 @@ interface TutorChatResponse {
 
 function fallbackReply(payload: TutorChatPayload): TutorChatReply {
   const latest = payload.latestCustomerText.toLowerCase();
+  const isExistingCustomer = payload.callerType === 'customer';
   const escalationNeeded = /(price|pricing|cost|quote|estimate|refund|billing|complaint|angry|upset|bradley|call me|damage|not finished|legal)/i.test(latest);
+
+  if (isExistingCustomer && /(missed|not finished|damage|billing|invoice|charged|complaint|upset|schedule|mowing|treatment|crew|bradley|call)/i.test(latest)) {
+    return {
+      recommendedReply: "I understand. I’ll make a clear note on your account and have this reviewed internally so we handle it correctly. Can I confirm the property address and the best callback number?",
+      nextStep: "Confirm the address, callback number, service involved, and the main issue.",
+      escalationNeeded: true,
+      escalationReason: "Existing customer issue may need Bradley or internal review.",
+      missingInfo: ["property address", "callback number", "main issue"],
+      sourceBasis: payload.memoryCount ? "Used Call Tutor SOP Memory where available with safe fallback." : "No Call Tutor SOP Memory loaded, used safe fallback."
+    };
+  }
 
   if (/(can't send|cannot send|no photo|come here|come out|visit)/i.test(latest)) {
     return {
