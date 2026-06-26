@@ -36,6 +36,17 @@ type ChatRow =
   | { id: string; role: 'customer'; text: string; createdAt: string; source?: 'manual' | 'tab-audio' }
   | { id: string; role: 'coach'; customerText: string; reply: TutorChatReply; createdAt: string };
 
+type LeadIntakeInfo = {
+  name: string;
+  address: string;
+  email: string;
+  phone: string;
+  service: string;
+  photosVideos: string;
+  gateAccess: string;
+  questionsBeforeEnd: string;
+};
+
 function makeId() {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -125,6 +136,112 @@ function isLikelyEnglishCustomerText(value: string) {
   return true;
 }
 
+const emptyLeadIntake: LeadIntakeInfo = {
+  name: '',
+  address: '',
+  email: '',
+  phone: '',
+  service: '',
+  photosVideos: '',
+  gateAccess: '',
+  questionsBeforeEnd: ''
+};
+
+function extractEmail(text: string) {
+  return text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ?? '';
+}
+
+function extractPhone(text: string) {
+  return text.match(/(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}/)?.[0] ?? '';
+}
+
+function looksLikeAddress(text: string) {
+  return /\d{1,6}\s+[^\n,]+\s+(street|st\b|drive|dr\b|road|rd\b|lane|ln\b|court|ct\b|avenue|ave\b|way|place|pl\b|circle|cir\b|terrace|ter\b|boulevard|blvd\b)/i.test(text)
+    || /\d{1,6}\s+[^\n,]+,?\s*(rockville|bethesda|potomac|gaithersburg|derwood|silver spring|north potomac|maryland|md)/i.test(text);
+}
+
+function isNameLike(text: string) {
+  const clean = text.trim();
+  if (!clean || clean.length > 45) return false;
+  if (extractEmail(clean) || extractPhone(clean) || looksLikeAddress(clean)) return false;
+  if (/\b(mulch|mowing|cleanup|estimate|service|backyard|front yard|photos?|video|next week|today|tomorrow|address|drive|road|street)\b/i.test(clean)) return false;
+  return /^[a-zA-Z][a-zA-Z'\-]+(?:\s+[a-zA-Z][a-zA-Z'\-]+){0,3}$/.test(clean);
+}
+
+function mergeLeadIntake(current: LeadIntakeInfo, customerText: string): LeadIntakeInfo {
+  const next = { ...current };
+  const text = customerText.trim();
+
+  const email = extractEmail(text);
+  if (email) next.email = email;
+
+  const phone = extractPhone(text);
+  if (phone) next.phone = phone;
+
+  if (!next.address && looksLikeAddress(text)) next.address = text;
+
+  if (!next.name && isNameLike(text)) next.name = text;
+
+  if (!next.service && /\b(mulch|mowing|cleanup|clean up|lawn|aeration|overseeding|seed|plant|bush|trim|weeding|landscap|estimate|quote|installation|install)\b/i.test(text)) {
+    next.service = text;
+  }
+
+  if (!next.photosVideos && /\b(photo|photos|picture|pictures|image|images|video|walkthrough|can't send|cannot send|no photo|send you|text it|email it)\b/i.test(text)) {
+    next.photosVideos = text;
+  }
+
+  if (!next.gateAccess && /\b(gate|access|backyard|yard|dog|pet|locked|code|fence|irrigation|sprinkler|invisible fence|parking)\b/i.test(text)) {
+    next.gateAccess = text;
+  }
+
+  if (!next.questionsBeforeEnd && /\b(no question|no questions|that's all|nothing else|okay sure|ok sure|thank you|thanks)\b/i.test(text)) {
+    next.questionsBeforeEnd = text;
+  }
+
+  return next;
+}
+
+function getMissingLeadInfo(info: LeadIntakeInfo) {
+  const missing: Array<keyof LeadIntakeInfo> = [];
+  if (!info.name) missing.push('name');
+  if (!info.address) missing.push('address');
+  if (!info.email) missing.push('email');
+  if (!info.phone) missing.push('phone');
+  if (!info.service) missing.push('service');
+  if (!info.photosVideos) missing.push('photosVideos');
+  if (!info.gateAccess) missing.push('gateAccess');
+  if (!info.questionsBeforeEnd) missing.push('questionsBeforeEnd');
+  return missing;
+}
+
+function leadInfoLabel(key: keyof LeadIntakeInfo) {
+  const labels: Record<keyof LeadIntakeInfo, string> = {
+    name: 'Name',
+    address: 'Address',
+    email: 'Email',
+    phone: 'Phone number',
+    service: 'What service',
+    photosVideos: 'Photos/videos',
+    gateAccess: 'Gate access',
+    questionsBeforeEnd: 'Questions before ending'
+  };
+  return labels[key];
+}
+
+function leadInfoValuePlaceholder(key: keyof LeadIntakeInfo) {
+  const labels: Record<keyof LeadIntakeInfo, string> = {
+    name: 'Customer name',
+    address: 'Property address',
+    email: 'Email address',
+    phone: 'Phone number',
+    service: 'Service needed',
+    photosVideos: 'Photos/video status',
+    gateAccess: 'Gate/access notes',
+    questionsBeforeEnd: 'Customer questions'
+  };
+  return labels[key];
+}
+
 function canRecordTabAudio() {
   return typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getDisplayMedia) && typeof MediaRecorder !== 'undefined';
 }
@@ -137,6 +254,7 @@ export function RealtimeCallTutorPage() {
   const [loadingReply, setLoadingReply] = useState(false);
   const [quickLine, setQuickLine] = useState('');
   const [callerType, setCallerType] = useState<'lead' | 'customer'>('lead');
+  const [leadInfo, setLeadInfo] = useState<LeadIntakeInfo>(emptyLeadIntake);
   const [audioLoading, setAudioLoading] = useState(false);
   const [tabAudioActive, setTabAudioActive] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -160,6 +278,8 @@ export function RealtimeCallTutorPage() {
   const tutorMemories = useMemo(() => memories.filter((memory) => memory.is_active && isTutorMemory(memory)), [memories]);
   const callTutorMemory = useMemo(() => tutorMemoryText(memories), [memories]);
   const conversation = useMemo(() => buildConversation(rows), [rows]);
+  const missingLeadInfo = useMemo(() => getMissingLeadInfo(leadInfo), [leadInfo]);
+  const completedLeadInfoCount = 8 - missingLeadInfo.length;
 
   useEffect(() => {
     void loadMemories();
@@ -306,6 +426,10 @@ export function RealtimeCallTutorPage() {
     }
   };
 
+  const updateLeadInfo = (key: keyof LeadIntakeInfo, value: string) => {
+    setLeadInfo((current) => ({ ...current, [key]: value }));
+  };
+
   const generateReplyForCustomerLine = async (clean: string, source: 'manual' | 'tab-audio') => {
     if (!isLikelyEnglishCustomerText(clean)) {
       setAudioHelp('Skipped a non-English or unclear audio chunk. Waiting for clear English customer speech...');
@@ -319,6 +443,12 @@ export function RealtimeCallTutorPage() {
       createdAt: new Date().toISOString(),
       source
     };
+
+    let nextLeadInfo = leadInfo;
+    if (callerType === 'lead') {
+      nextLeadInfo = mergeLeadIntake(leadInfo, clean);
+      setLeadInfo(nextLeadInfo);
+    }
 
     const baseRows = rowsRef.current;
     const nextRows = [...baseRows, customerRow];
@@ -336,7 +466,7 @@ export function RealtimeCallTutorPage() {
       const messages: TutorChatMessage[] = nextRows.slice(-10).map((row) => row.role === 'customer' ? { role: 'customer', text: row.text } : { role: 'coach', text: row.reply.recommendedReply });
       const reply = await getRealtimeTutorChatReply({
         latestCustomerText: clean,
-        conversation: buildRecentConversation(nextRows),
+        conversation: `${buildRecentConversation(nextRows)}\n\nNEW LEAD INTAKE STATUS:\n${JSON.stringify(nextLeadInfo, null, 2)}\nMissing: ${getMissingLeadInfo(nextLeadInfo).map(leadInfoLabel).join(', ') || 'none'}`, 
         messages,
         aiMemory: relevantMemory,
         memoryCount: tutorMemories.length,
@@ -558,6 +688,7 @@ export function RealtimeCallTutorPage() {
     rowsRef.current = [];
     setRows([]);
     setCustomerInput('');
+    setLeadInfo(emptyLeadIntake);
     setQuickLine('');
     setCopied('');
     setError('');
@@ -741,6 +872,34 @@ export function RealtimeCallTutorPage() {
         </Card>
 
         <div className="space-y-6">
+          {callerType === 'lead' ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>New Lead Info Checklist</CardTitle>
+                <CardDescription>{completedLeadInfoCount}/8 completed. Fill manually or let customer answers auto-fill.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {(Object.keys(emptyLeadIntake) as Array<keyof LeadIntakeInfo>).map((key) => (
+                  <div key={key} className="rounded-2xl border border-slate-200 bg-white p-3">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{leadInfoLabel(key)}</p>
+                      <Badge tone={leadInfo[key] ? 'green' : 'amber'}>{leadInfo[key] ? 'Done' : 'Missing'}</Badge>
+                    </div>
+                    <input
+                      value={leadInfo[key]}
+                      onChange={(event) => updateLeadInfo(key, event.target.value)}
+                      placeholder={leadInfoValuePlaceholder(key)}
+                      className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-ga-500 focus:ring-2 focus:ring-ga-500/20"
+                    />
+                  </div>
+                ))}
+                <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm leading-6 text-blue-900">
+                  Ask only the missing item next. Do not ask again for details already marked Done.
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
+
           <Card>
             <CardHeader><CardTitle>Latest Suggested Reply</CardTitle><CardDescription>This is the fastest box to read during a call.</CardDescription></CardHeader>
             <CardContent className="space-y-4">
