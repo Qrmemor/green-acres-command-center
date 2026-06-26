@@ -61,11 +61,48 @@ function tutorMemoryText(memories: AIMemory[]) {
     .join('\n\n---\n\n');
 }
 
+function scoreTutorMemory(memory: AIMemory, latestCustomerText: string, callerType: 'lead' | 'customer') {
+  const haystack = `${memory.title} ${memory.summary} ${(memory.tags ?? []).join(' ')}`.toLowerCase();
+  const words = latestCustomerText
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length >= 4);
+
+  let score = 0;
+
+  for (const word of words) {
+    if (haystack.includes(word)) score += 2;
+  }
+
+  if (callerType === 'customer' && /(customer|existing|missed|billing|invoice|complaint|damage|mowing|treatment|service)/i.test(haystack)) score += 4;
+  if (callerType === 'lead' && /(lead|estimate|intake|photo|video|address|new service|cleanup|mulch|mowing)/i.test(haystack)) score += 4;
+  if (memory.confidence === 'high') score += 1;
+
+  return score;
+}
+
+function relevantTutorMemoryText(memories: AIMemory[], latestCustomerText: string, callerType: 'lead' | 'customer') {
+  const active = memories.filter((memory) => memory.is_active && isTutorMemory(memory));
+
+  const ranked = active
+    .map((memory) => ({ memory, score: scoreTutorMemory(memory, latestCustomerText, callerType) }))
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 5)
+    .map(({ memory }) => memory);
+
+  return tutorMemoryText(ranked).slice(0, 14000);
+}
+
 function buildConversation(rows: ChatRow[]) {
   return rows.map((row) => {
     if (row.role === 'customer') return `Customer: ${row.text}`;
     return `Suggested Reply: ${row.reply.recommendedReply}\nEscalation Needed: ${row.reply.escalationNeeded ? 'Yes' : 'No'}`;
   }).join('\n\n');
+}
+
+function buildRecentConversation(rows: ChatRow[]) {
+  return buildConversation(rows.slice(-10)).slice(0, 7000);
 }
 
 function normalizeText(value: string) {
@@ -98,6 +135,7 @@ export function RealtimeCallTutorPage() {
   const [rows, setRows] = useState<ChatRow[]>([]);
   const [customerInput, setCustomerInput] = useState('');
   const [loadingReply, setLoadingReply] = useState(false);
+  const [quickLine, setQuickLine] = useState('');
   const [callerType, setCallerType] = useState<'lead' | 'customer'>('lead');
   const [audioLoading, setAudioLoading] = useState(false);
   const [tabAudioActive, setTabAudioActive] = useState(false);
@@ -287,16 +325,20 @@ export function RealtimeCallTutorPage() {
 
     rowsRef.current = nextRows;
     setRows(nextRows);
+    setQuickLine(callerType === 'customer'
+      ? 'I understand. Let me make a clear note and confirm the account details first.'
+      : 'Sure, I can help gather the details first so we can review the best next step.');
     setLoadingReply(true);
     setError('');
 
     try {
-      const messages: TutorChatMessage[] = nextRows.map((row) => row.role === 'customer' ? { role: 'customer', text: row.text } : { role: 'coach', text: row.reply.recommendedReply });
+      const relevantMemory = relevantTutorMemoryText(memories, clean, callerType);
+      const messages: TutorChatMessage[] = nextRows.slice(-10).map((row) => row.role === 'customer' ? { role: 'customer', text: row.text } : { role: 'coach', text: row.reply.recommendedReply });
       const reply = await getRealtimeTutorChatReply({
         latestCustomerText: clean,
-        conversation: buildConversation(nextRows),
+        conversation: buildRecentConversation(nextRows),
         messages,
-        aiMemory: callTutorMemory,
+        aiMemory: relevantMemory,
         memoryCount: tutorMemories.length,
         callerType
       });
@@ -311,6 +353,7 @@ export function RealtimeCallTutorPage() {
 
       rowsRef.current = [...rowsRef.current, coachRow];
       setRows(rowsRef.current);
+      setQuickLine('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Realtime tutor failed.');
     } finally {
@@ -354,9 +397,9 @@ export function RealtimeCallTutorPage() {
     try {
       const reply = await getRealtimeTutorChatReply({
         latestCustomerText: `Rewrite this reply in ${mode} style: ${lastCoach.reply.recommendedReply}`,
-        conversation,
-        messages: rows.map((row) => row.role === 'customer' ? { role: 'customer', text: row.text } : { role: 'coach', text: row.reply.recommendedReply }),
-        aiMemory: callTutorMemory,
+        conversation: buildRecentConversation(rows),
+        messages: rows.slice(-10).map((row) => row.role === 'customer' ? { role: 'customer', text: row.text } : { role: 'coach', text: row.reply.recommendedReply }),
+        aiMemory: relevantTutorMemoryText(memories, lastCoach.customerText, callerType),
         memoryCount: tutorMemories.length,
         callerType,
         mode
@@ -490,7 +533,7 @@ export function RealtimeCallTutorPage() {
             if (recorder.state === 'recording') {
               recorder.stop();
             }
-          }, 8000);
+          }, 5000);
         } catch {
           setAudioHelp('Could not start this audio segment. Try re-sharing the call tab and checking Share tab audio.');
         }
@@ -515,6 +558,7 @@ export function RealtimeCallTutorPage() {
     rowsRef.current = [];
     setRows([]);
     setCustomerInput('');
+    setQuickLine('');
     setCopied('');
     setError('');
     lastHeardRef.current = '';
@@ -700,6 +744,12 @@ export function RealtimeCallTutorPage() {
           <Card>
             <CardHeader><CardTitle>Latest Suggested Reply</CardTitle><CardDescription>This is the fastest box to read during a call.</CardDescription></CardHeader>
             <CardContent className="space-y-4">
+              {quickLine && loadingReply ? (
+                <div className="rounded-3xl border border-blue-200 bg-blue-50 p-5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">Quick line while AI loads</p>
+                  <p className="mt-2 whitespace-pre-wrap text-lg font-bold leading-7 text-blue-950">{quickLine}</p>
+                </div>
+              ) : null}
               {lastReply ? (
                 <>
                   <div className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5"><p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Read this</p><p className="mt-2 whitespace-pre-wrap text-xl font-bold leading-8 text-emerald-950">{lastReply.reply.recommendedReply}</p></div>
